@@ -8,6 +8,14 @@
 #define MQTT_PORT       1883
 #define MQTT_CLIENT_ID  "hoymiles-esp32"
 
+// Inverter BLE advertisement prefix; the 12-char serial tail after this is
+// auto-discovered during the scan.
+#define BLE_NAME_PREFIX     "RMI-"
+
+// Optional: if several inverters are in BLE range, set this to the exact
+// 12-char serial tail to pin one. Empty = connect to the first RMI- device.
+#define INVERTER_SN_FILTER  ""
+
 // MQTT base topic: hoymiles/<sn>/
 #define MQTT_BASE_TOPIC "hoymiles/" INVERTER_SN "/"
 

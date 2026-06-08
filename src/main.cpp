@@ -25,6 +25,7 @@ static uint16_t s_tid = 1;
 static uint8_t  s_enc_rand[16] = {0};
 static bool     s_enc_rand_ready = false;
 static int      s_poll_failures = 0;
+static char     s_sn[16] = {0};
 
 static bool wifi_connect(void) {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -60,7 +61,8 @@ static bool mqtt_connect(void) {
 }
 
 static bool ble_connect_and_handshake(void) {
-    if (!ble_connect(BLE_DEVICE_NAME, nullptr)) return false;
+    if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn), nullptr)) return false;
+    Serial.printf("[main] Inverter SN: %s\n", s_sn);
     if (!handshake_run(&s_tid, s_enc_rand)) {
         ble_disconnect();
         return false;

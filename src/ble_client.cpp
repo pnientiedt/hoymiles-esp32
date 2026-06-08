@@ -3,6 +3,7 @@
 #include <NimBLEDevice.h>
 #include <Arduino.h>
 #include <atomic>
+#include <string.h>
 
 #define SVC_UUID  "0000e0ff-3c17-d293-8e48-14fe2e4da212"
 #define TX_UUID   "0000ffe1-0000-1000-8000-00805f9b34fb"
@@ -35,7 +36,9 @@ void ble_init(void) {
     NimBLEDevice::setMTU(512);
 }
 
-bool ble_connect(const char *device_name, BleRxCallback rx_cb) {
+bool ble_connect(const char *name_prefix, const char *sn_filter,
+                 char *sn_out, size_t sn_out_len, BleRxCallback rx_cb) {
+    if (sn_out == nullptr || sn_out_len == 0) return false;
     s_rx_cb.store(rx_cb);
 
     // Clean up any pre-existing client before creating a new one
@@ -50,18 +53,24 @@ bool ble_connect(const char *device_name, BleRxCallback rx_cb) {
     scan->setWindow(100);
     NimBLEScanResults results = scan->start(10);
 
+    size_t prefix_len = strlen(name_prefix);
     NimBLEAddress target_addr;
     bool found = false;
     for (int i = 0; i < results.getCount(); i++) {
         NimBLEAdvertisedDevice dev = results.getDevice(i);
-        if (dev.getName() == device_name) {
-            target_addr = dev.getAddress();
-            found = true;
-            break;
-        }
+        std::string name = dev.getName();
+        if (name.size() <= prefix_len) continue;
+        if (name.compare(0, prefix_len, name_prefix) != 0) continue;
+        const char *tail = name.c_str() + prefix_len;
+        if (sn_filter && sn_filter[0] != '\0' && strcmp(tail, sn_filter) != 0) continue;
+        strncpy(sn_out, tail, sn_out_len - 1);
+        sn_out[sn_out_len - 1] = '\0';
+        target_addr = dev.getAddress();
+        found = true;
+        break;
     }
     if (!found) {
-        Serial.printf("[BLE] Device '%s' not found.\n", device_name);
+        Serial.printf("[BLE] No device matching '%s*' found.\n", name_prefix);
         return false;
     }
 
