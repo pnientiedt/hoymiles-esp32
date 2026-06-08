@@ -99,5 +99,14 @@ void loop(void) {
     }
 
     s_mqtt.loop();
-    delay(POLL_INTERVAL_MS);
+
+    // Slice the poll-interval wait so we keep feeding the watchdog and pumping
+    // MQTT. A single delay(POLL_INTERVAL_MS) would equal the WDT timeout and
+    // never reset it, tripping a panic reset on every normal idle cycle.
+    uint32_t wait_start = millis();
+    while ((millis() - wait_start) < POLL_INTERVAL_MS) {
+        esp_task_wdt_reset();
+        s_mqtt.loop();
+        delay(250);
+    }
 }
