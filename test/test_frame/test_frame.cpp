@@ -11,10 +11,10 @@ void test_frame_build_v0_no_tag(void) {
     TEST_ASSERT_EQUAL(14, len);  // 10 header + 4 payload
     TEST_ASSERT_EQUAL_HEX8(0x48, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x4D, buf[1]);
-    TEST_ASSERT_EQUAL_HEX16(0xA201, (buf[2] << 8) | buf[3]);
-    TEST_ASSERT_EQUAL_HEX16(1,      (buf[4] << 8) | buf[5]);
-    TEST_ASSERT_EQUAL_HEX16(0x2BA1, (buf[6] << 8) | buf[7]);
-    TEST_ASSERT_EQUAL_HEX16(14, (buf[8] << 8) | buf[9]);
+    TEST_ASSERT_EQUAL_HEX16(0xA201, ((uint16_t)buf[2] << 8) | buf[3]);
+    TEST_ASSERT_EQUAL_HEX16(1,      ((uint16_t)buf[4] << 8) | buf[5]);
+    TEST_ASSERT_EQUAL_HEX16(0x2BA1, ((uint16_t)buf[6] << 8) | buf[7]);
+    TEST_ASSERT_EQUAL_HEX16(14, ((uint16_t)buf[8] << 8) | buf[9]);
     TEST_ASSERT_EQUAL_MEMORY(ct, buf + 10, 4);
 }
 
@@ -27,8 +27,8 @@ void test_frame_build_v1_with_tag(void) {
 
     TEST_ASSERT_EQUAL(10 + 3 + 16, len);
     uint16_t expected_crc = crc16_modbus(ct, 3);
-    TEST_ASSERT_EQUAL_HEX16(expected_crc, (buf[6] << 8) | buf[7]);
-    TEST_ASSERT_EQUAL_HEX16(13, (buf[8] << 8) | buf[9]);
+    TEST_ASSERT_EQUAL_HEX16(expected_crc, ((uint16_t)buf[6] << 8) | buf[7]);
+    TEST_ASSERT_EQUAL_HEX16(13, ((uint16_t)buf[8] << 8) | buf[9]);
     TEST_ASSERT_EQUAL_MEMORY(tag, buf + 10 + 3, 16);
 }
 

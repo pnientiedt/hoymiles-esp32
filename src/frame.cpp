@@ -9,9 +9,10 @@ size_t frame_build(uint8_t *buf, size_t buf_len,
     size_t tag_len = tag ? 16 : 0;
     size_t total = HM_HEADER_LEN + ct_len + tag_len;
     if (buf_len < total) return 0;
+    if (ct_len + HM_HEADER_LEN > 0xFFFF) return 0;
 
-    uint16_t crc = crc16_modbus(ciphertext, ct_len);
-    uint16_t length = (uint16_t)(ct_len + 10);
+    uint16_t crc = (ct_len > 0) ? crc16_modbus(ciphertext, ct_len) : 0;
+    uint16_t length = (uint16_t)(ct_len + HM_HEADER_LEN);
 
     buf[0] = HM_MAGIC_0;
     buf[1] = HM_MAGIC_1;
@@ -24,7 +25,7 @@ size_t frame_build(uint8_t *buf, size_t buf_len,
     buf[8] = (length >> 8) & 0xFF;
     buf[9] = length & 0xFF;
 
-    memcpy(buf + 10, ciphertext, ct_len);
+    if (ct_len > 0) memcpy(buf + HM_HEADER_LEN, ciphertext, ct_len);
     if (tag) memcpy(buf + 10 + ct_len, tag, 16);
     return total;
 }

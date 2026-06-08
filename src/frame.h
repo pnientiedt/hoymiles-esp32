@@ -22,6 +22,8 @@ size_t frame_build(uint8_t *buf, size_t buf_len,
 
 // Parses the fixed 10-byte header.
 // Returns false if magic is wrong or buf_len < 10.
+// length_out: wire field = ct_len + 10. Caller derives ct_len = *length_out - HM_HEADER_LEN.
+// Caller is responsible for CRC validation: crc16_modbus(payload, ct_len) must equal crc_out.
 bool frame_parse_header(const uint8_t *buf, size_t buf_len,
                         uint16_t *cmd_out, uint16_t *tid_out,
                         uint16_t *crc_out, uint16_t *length_out);
