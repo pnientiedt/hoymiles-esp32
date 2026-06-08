@@ -23,15 +23,26 @@
 #define COMMCMD_TIME_SYNC 104
 
 static uint8_t  s_rx_buf[RX_BUF_LEN];
-static size_t   s_rx_len = 0;
-static bool     s_rx_ready = false;
+static volatile size_t   s_rx_len   = 0;
+static volatile bool     s_rx_ready = false;
 
 static void rx_handler(const uint8_t *data, size_t len) {
-    if (s_rx_len + len <= sizeof(s_rx_buf)) {
+    if (s_rx_len + len <= RX_BUF_LEN) {
         memcpy(s_rx_buf + s_rx_len, data, len);
         s_rx_len += len;
     }
-    s_rx_ready = true;
+    // Only signal complete when the full frame has arrived.
+    // Need at least 10 bytes to read the header.
+    if (s_rx_len >= HM_HEADER_LEN) {
+        uint16_t wire_len = ((uint16_t)s_rx_buf[8] << 8) | s_rx_buf[9];
+        uint16_t cmd      = ((uint16_t)s_rx_buf[2] << 8) | s_rx_buf[3];
+        // V1 frames (CommCmd=0xA305, RealDataNew=0xA311) append a 16-byte GCM tag
+        size_t tag_len = (cmd == 0xA305 || cmd == 0xA311) ? 16 : 0;
+        size_t expected = (size_t)wire_len + tag_len;
+        if (s_rx_len >= expected) {
+            s_rx_ready = true;
+        }
+    }
 }
 
 static bool wait_for_rx(uint32_t timeout_ms) {
@@ -106,9 +117,6 @@ static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
     // Register callback before writing
     ble_set_rx_callback(rx_handler);
 
-    // Reset RX state, then write
-    s_rx_ready = false;
-    s_rx_len = 0;
     if (!ble_write(frame, frame_len)) {
         Serial.println("[HS] V0: ble_write failed");
         return false;
@@ -141,13 +149,17 @@ static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
         Serial.println("[HS] V0: frame_payload failed");
         return false;
     }
+    if (crc16_modbus(payload, payload_ct_len) != rcrc) {
+        Serial.println("[HS] V0: CRC mismatch.");
+        return false;
+    }
 
     // V0 decrypt with response cmd and tid
     uint8_t rkey[16], riv[16];
     v0_derive_key(INVERTER_SN, rkey);
     v0_derive_iv(rcmd, rtid, INVERTER_SN, riv);
 
-    uint8_t pt[TX_BUF_LEN];
+    uint8_t pt[RX_BUF_LEN];
     size_t pt_len = v0_decrypt(payload, payload_ct_len, rkey, riv, pt);
     if (pt_len == 0) {
         Serial.println("[HS] V0: decrypt failed");
@@ -236,9 +248,6 @@ static bool do_commcmd(uint16_t *tid, const uint8_t enc_rand[16], int32_t action
     // Register callback before writing
     ble_set_rx_callback(rx_handler);
 
-    // Reset RX state, then write
-    s_rx_ready = false;
-    s_rx_len = 0;
     if (!ble_write(frame, frame_len)) {
         Serial.println("[HS] CommCmd: ble_write failed");
         return false;
@@ -248,6 +257,21 @@ static bool do_commcmd(uint16_t *tid, const uint8_t enc_rand[16], int32_t action
     if (!wait_for_rx(RESPONSE_TIMEOUT_MS)) {
         Serial.printf("[HS] CommCmd action=%d: timeout\n", (int)action);
         return false;
+    }
+
+    // Parse response header for CRC validation
+    uint16_t rcmd, rtid, rcrc, rlen;
+    if (!frame_parse_header(s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
+        Serial.println("[HS] CommCmd: frame_parse_header failed");
+        return false;
+    }
+    if (rlen >= HM_HEADER_LEN) {
+        size_t payload_ct_len = rlen - HM_HEADER_LEN;
+        const uint8_t *resp_payload = frame_payload(s_rx_buf, s_rx_len);
+        if (resp_payload && crc16_modbus(resp_payload, payload_ct_len) != rcrc) {
+            Serial.println("[HS] CommCmd: CRC mismatch.");
+            return false;
+        }
     }
 
     return true;
