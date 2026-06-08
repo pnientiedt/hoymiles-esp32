@@ -1,0 +1,48 @@
+syntax = "proto2";
+
+message PvMO {
+    optional sint64 serial_number = 1;
+    optional int32  port_number   = 2;
+    optional int32  voltage       = 3;
+    optional int32  current       = 4;
+    optional int32  power         = 5;
+    optional int32  energy_total  = 6;
+    optional int32  energy_daily  = 7;
+    optional int32  error_code    = 8;
+}
+
+message SGSMO {
+    optional sint64 serial_number    = 1;
+    optional int32  firmware_version = 2;
+    optional int32  voltage          = 3;
+    optional int32  frequency        = 4;
+    optional int32  active_power     = 5;
+    optional int32  reactive_power   = 6;
+    optional int32  current          = 7;
+    optional int32  power_factor     = 8;
+    optional int32  temperature      = 9;
+    optional int32  warning_number   = 10;
+    optional int32  crc_checksum     = 11;
+    optional int32  link_status      = 12;
+    optional int32  power_limit      = 13;
+}
+
+message RealDataNewResDTO {
+    optional bytes  time_ymd_hms = 1;
+    optional int32  cp           = 2;
+    optional int32  error_code   = 3;
+    optional int32  offset       = 4;
+    optional int32  time         = 5;
+}
+
+message RealDataNewReqDTO {
+    optional string device_serial_number = 1;
+    optional int32  timestamp            = 2;
+    optional int32  ap                   = 3;
+    optional int32  cp                   = 4;
+    optional int32  firmware_version     = 5;
+    optional SGSMO  sgs_data             = 9;
+    repeated PvMO   pv_data              = 11;
+    optional uint64 dtu_power            = 12;
+    optional uint64 dtu_daily_energy     = 13;
+}
