@@ -63,7 +63,7 @@ static bool mqtt_connect(void) {
 static bool ble_connect_and_handshake(void) {
     if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn), nullptr)) return false;
     Serial.printf("[main] Inverter SN: %s\n", s_sn);
-    if (!handshake_run(&s_tid, s_enc_rand)) {
+    if (!handshake_run(s_sn, &s_tid, s_enc_rand)) {
         ble_disconnect();
         return false;
     }
