@@ -1,0 +1,234 @@
+#include "poller.h"
+#include "config.h"
+#include "crypto.h"
+#include "frame.h"
+#include "ble_client.h"
+#include "proto/RealDataNew.pb.h"
+#include <Arduino.h>
+#include <pb_encode.h>
+#include <pb_decode.h>
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+
+#define CMD_REAL  0xA311
+
+// ---------------------------------------------------------------------------
+// RX state
+// ---------------------------------------------------------------------------
+
+static volatile uint8_t  s_rx_buf[2048];
+static volatile size_t   s_rx_len = 0;
+static volatile bool     s_rx_ready = false;
+
+static void rx_handler(const uint8_t *data, size_t len) {
+    if (s_rx_len + len <= sizeof(s_rx_buf)) {
+        memcpy((uint8_t *)s_rx_buf + s_rx_len, data, len);
+        s_rx_len += len;
+    }
+    // Only signal complete when the full V1 frame has arrived.
+    // RealDataNew is always V1 (cmd=0xA311), so tag_len=16 always.
+    if (s_rx_len >= HM_HEADER_LEN) {
+        uint16_t wire_len = ((uint16_t)s_rx_buf[8] << 8) | s_rx_buf[9];
+        size_t expected = (size_t)wire_len + 16;  // V1 always has 16-byte tag
+        if (s_rx_len >= expected) {
+            s_rx_ready = true;
+        }
+    }
+}
+
+static bool wait_rx(uint32_t timeout_ms) {
+    s_rx_ready = false;
+    s_rx_len = 0;
+    uint32_t start = millis();
+    while (!s_rx_ready) {
+        if (millis() - start > timeout_ms) return false;
+        delay(5);
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Request sender
+// ---------------------------------------------------------------------------
+
+static bool send_real_req(uint16_t *tid, const uint8_t enc_rand[16], int cp) {
+    RealDataNewResDTO req = RealDataNewResDTO_init_zero;
+    req.has_cp = true;
+    req.cp = cp;
+    req.has_time = true;
+    req.time = (int32_t)time(nullptr);
+    req.has_offset = true;
+    req.offset = 28800;
+
+    uint8_t pb_buf[64];
+    pb_ostream_t stream = pb_ostream_from_buffer(pb_buf, sizeof(pb_buf));
+    if (!pb_encode(&stream, RealDataNewResDTO_fields, &req)) return false;
+    size_t pb_len = stream.bytes_written;
+
+    uint8_t key[16], nonce[12];
+    v1_derive_key(enc_rand, key);
+    v1_derive_nonce(CMD_REAL, *tid, enc_rand, nonce);
+    uint8_t aad[4];
+    aad[0] = CMD_REAL & 0xFF;          // 0x11
+    aad[1] = (CMD_REAL >> 8) & 0xFF;   // 0xA3
+    aad[2] = *tid & 0xFF;
+    aad[3] = (*tid >> 8) & 0xFF;
+
+    uint8_t ct[256], tag[16];
+    if (!v1_encrypt(pb_buf, pb_len, key, nonce, aad, 4, ct, tag)) return false;
+
+    uint8_t frame[512];
+    size_t frame_len = frame_build(frame, sizeof(frame), CMD_REAL, *tid, ct, pb_len, tag);
+    (*tid)++;
+
+    return ble_write(frame, frame_len);
+}
+
+// ---------------------------------------------------------------------------
+// Response decoder
+// ---------------------------------------------------------------------------
+
+static bool decode_page(const uint8_t *buf, size_t buf_len,
+                        uint16_t resp_tid, const uint8_t enc_rand[16],
+                        RealDataNewReqDTO *out) {
+    uint16_t cmd, rcrc, rlen;
+    if (!frame_parse_header(buf, buf_len, &cmd, &resp_tid, &rcrc, &rlen)) return false;
+
+    const uint8_t *ct = frame_payload(buf, buf_len);
+    size_t ct_len = buf_len - HM_HEADER_LEN - 16;  // strip header and 16-byte GCM tag
+    const uint8_t *tag = buf + buf_len - 16;
+
+    // CRC validation (over ciphertext only, no tag)
+    if (crc16_modbus(ct, ct_len) != rcrc) {
+        Serial.println("[PL] CRC mismatch.");
+        return false;
+    }
+
+    uint8_t key[16], nonce[12];
+    v1_derive_key(enc_rand, key);
+    v1_derive_nonce(CMD_REAL, resp_tid, enc_rand, nonce);
+    uint8_t aad[4];
+    aad[0] = CMD_REAL & 0xFF;
+    aad[1] = (CMD_REAL >> 8) & 0xFF;
+    aad[2] = resp_tid & 0xFF;
+    aad[3] = (resp_tid >> 8) & 0xFF;
+
+    uint8_t pt[1024];
+    if (!v1_decrypt(ct, ct_len, key, nonce, aad, 4, tag, pt)) {
+        Serial.println("[PL] GCM auth tag failure.");
+        return false;
+    }
+
+    pb_istream_t istream = pb_istream_from_buffer(pt, ct_len);
+    if (!pb_decode(&istream, RealDataNewReqDTO_fields, out)) {
+        Serial.println("[PL] Proto decode failed.");
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// MQTT helpers
+// ---------------------------------------------------------------------------
+
+static void publish_float(PubSubClient &mqtt, const char *subtopic, float value) {
+    char topic[128], payload[32];
+    snprintf(topic, sizeof(topic), "%s%s", MQTT_BASE_TOPIC, subtopic);
+    snprintf(payload, sizeof(payload), "%.3f", value);
+    mqtt.publish(topic, payload, true);
+}
+
+static void publish_str(PubSubClient &mqtt, const char *subtopic, const char *value) {
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s%s", MQTT_BASE_TOPIC, subtopic);
+    mqtt.publish(topic, value, true);
+}
+
+// ---------------------------------------------------------------------------
+// Main poll entry-point
+// ---------------------------------------------------------------------------
+
+bool poller_poll(PubSubClient &mqtt, uint16_t *tid, const uint8_t enc_rand[16]) {
+    ble_set_rx_callback(rx_handler);
+
+    // Send first page request
+    if (!send_real_req(tid, enc_rand, 0)) {
+        Serial.println("[PL] Send request failed.");
+        return false;
+    }
+    if (!wait_rx(RESPONSE_TIMEOUT_MS)) {
+        Serial.println("[PL] Timeout.");
+        return false;
+    }
+
+    uint16_t cmd, resp_tid, rcrc, rlen;
+    if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &cmd, &resp_tid, &rcrc, &rlen)) {
+        Serial.println("[PL] Frame parse failed.");
+        return false;
+    }
+
+    RealDataNewReqDTO combined = RealDataNewReqDTO_init_zero;
+    if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, resp_tid, enc_rand, &combined)) {
+        return false;
+    }
+
+    // Fetch additional pages if ap > 1
+    for (int cp = 1; cp < combined.ap; cp++) {
+        if (!send_real_req(tid, enc_rand, cp)) break;
+        if (!wait_rx(RESPONSE_TIMEOUT_MS)) break;
+
+        if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &cmd, &resp_tid, &rcrc, &rlen)) continue;
+
+        RealDataNewReqDTO page = RealDataNewReqDTO_init_zero;
+        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, resp_tid, enc_rand, &page)) continue;
+
+        // Merge pv_data from this page
+        for (pb_size_t i = 0; i < page.pv_data_count; i++) {
+            if (combined.pv_data_count < 4) {
+                combined.pv_data[combined.pv_data_count++] = page.pv_data[i];
+            }
+        }
+    }
+
+    // Publish AC output
+    if (combined.has_sgs_data) {
+        SGSMO &ac = combined.sgs_data;
+        publish_float(mqtt, "ac/voltage",      ac.voltage      / 10.0f);
+        publish_float(mqtt, "ac/frequency",    ac.frequency    / 100.0f);
+        publish_float(mqtt, "ac/power",        ac.active_power / 10.0f);
+        publish_float(mqtt, "ac/current",      ac.current      / 100.0f);
+        publish_float(mqtt, "ac/power_factor", ac.power_factor / 100.0f);
+        publish_float(mqtt, "ac/temperature",  ac.temperature  / 10.0f);
+        publish_float(mqtt, "ac/power_limit",  ac.power_limit  / 10.0f);
+    }
+
+    // Publish per-panel DC
+    float total_energy_kWh = 0.0f;
+    for (pb_size_t i = 0; i < combined.pv_data_count; i++) {
+        PvMO &pv = combined.pv_data[i];
+        char base[32], subtopic[64];
+        snprintf(base, sizeof(base), "pv/%d/", (int)pv.port_number);
+
+        snprintf(subtopic, sizeof(subtopic), "%svoltage",      base); publish_float(mqtt, subtopic, pv.voltage      / 10.0f);
+        snprintf(subtopic, sizeof(subtopic), "%scurrent",      base); publish_float(mqtt, subtopic, pv.current      / 100.0f);
+        snprintf(subtopic, sizeof(subtopic), "%spower",        base); publish_float(mqtt, subtopic, pv.power        / 10.0f);
+        snprintf(subtopic, sizeof(subtopic), "%senergy_today", base); publish_float(mqtt, subtopic, pv.energy_daily / 1000.0f);
+        snprintf(subtopic, sizeof(subtopic), "%senergy_total", base); publish_float(mqtt, subtopic, pv.energy_total / 1000.0f);
+
+        total_energy_kWh += pv.energy_total / 1000.0f;
+    }
+
+    // Top-level topics
+    publish_float(mqtt, "energy_today", combined.dtu_daily_energy / 1000.0f);
+    publish_float(mqtt, "energy_total", total_energy_kWh);
+
+    char ts[16];
+    snprintf(ts, sizeof(ts), "%lu", (unsigned long)time(nullptr));
+    publish_str(mqtt, "last_seen", ts);
+
+    Serial.printf("[PL] Published. ac_power=%.1fW  pv_panels=%d\n",
+                  combined.has_sgs_data ? combined.sgs_data.active_power / 10.0f : 0.0f,
+                  (int)combined.pv_data_count);
+    return true;
+}
