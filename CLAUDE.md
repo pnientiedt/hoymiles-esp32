@@ -66,8 +66,9 @@ inverts: orchestration (`handshake`, `poller`, `main`) depends on primitives
   login + time-sync. Persists `encRand` to NVS (`Preferences`).
 - **`poller`** — RealDataNew request → reassemble paged BLE notifications →
   nanopb decode → scale → MQTT publish. Paged responses are all-or-nothing.
-- **`main`** — `setup`/`loop` state machine: WiFi → MQTT → BLE+handshake → poll,
-  with reconnect on each layer and a task watchdog.
+- **`main`** — `setup`/`loop` state machine: WiFi → BLE+handshake → MQTT → poll,
+  with reconnect on each layer and a task watchdog. BLE is discovered before MQTT
+  because the MQTT topics/Last-Will embed the runtime-discovered serial.
 
 ### Protocol invariants (get these wrong and nothing decrypts)
 
@@ -99,12 +100,16 @@ edit the `proto/*.proto` / `proto/*.options` source and regenerate. The
 ## Configuration / secrets
 
 Split into two headers:
-- **`src/secrets.h`** — gitignored, per-deployment secrets (`WIFI_*`, `MQTT_HOST`,
-  `BLE_DEVICE_NAME`, `INVERTER_SN`). Created by copying `src/secrets.example.h`.
+- **`src/secrets.h`** — gitignored, per-deployment secrets (`WIFI_SSID`,
+  `WIFI_PASSWORD`, `MQTT_HOST`). Created by copying `src/secrets.example.h`.
   A fresh clone won't compile until this exists.
-- **`src/config.h`** — versioned, non-secret tunables (MQTT port/client-id, topic
-  structure, poll interval, retry/timeout windows). It `#include`s `secrets.h`.
+- **`src/config.h`** — versioned, non-secret tunables (MQTT port/client-id, poll
+  interval, retry/timeout windows). It `#include`s `secrets.h`.
 
-`INVERTER_SN` is the 12-char tail of the inverter's BLE advertisement name
-`RMI-XXXXXXXXXXXX`, and is used for **both** the MQTT topic prefix and AES key
-derivation — it must match the device exactly.
+The inverter serial and MQTT topic prefix are **derived at runtime**: the firmware
+scans for a BLE advertisement whose name starts with `BLE_NAME_PREFIX` (`"RMI-"`),
+extracts the 12-char serial tail, and builds all topics as
+`MQTT_TOPIC_PREFIX + <discovered-serial> + "/"`. Both prefix constants live in
+`config.h`. If several inverters are in BLE range, set `INVERTER_SN_FILTER` in
+`config.h` to the exact 12-char serial tail to pin one device; leave it empty to
+connect to the first `RMI-` advertisement found.

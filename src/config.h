@@ -2,7 +2,8 @@
 
 // Per-deployment secrets live in secrets.h (gitignored). Copy secrets.example.h
 // to secrets.h and fill it in before building. It defines:
-//   WIFI_SSID, WIFI_PASSWORD, MQTT_HOST, BLE_DEVICE_NAME, INVERTER_SN
+//   WIFI_SSID, WIFI_PASSWORD, MQTT_HOST
+// The inverter serial is auto-discovered at runtime from its RMI- advertisement.
 #include "secrets.h"
 
 #define MQTT_PORT       1883
@@ -18,9 +19,6 @@
 
 // MQTT topics are <prefix><discovered-serial>/...  built at runtime.
 #define MQTT_TOPIC_PREFIX "hoymiles/"
-
-// MQTT base topic: hoymiles/<sn>/
-#define MQTT_BASE_TOPIC "hoymiles/" INVERTER_SN "/"
 
 #define POLL_INTERVAL_MS    30000
 #define WIFI_RETRY_MS       10000
