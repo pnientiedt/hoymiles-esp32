@@ -26,7 +26,7 @@ size_t frame_build(uint8_t *buf, size_t buf_len,
     buf[9] = length & 0xFF;
 
     if (ct_len > 0) memcpy(buf + HM_HEADER_LEN, ciphertext, ct_len);
-    if (tag) memcpy(buf + 10 + ct_len, tag, 16);
+    if (tag) memcpy(buf + HM_HEADER_LEN + ct_len, tag, 16);
     return total;
 }
 
