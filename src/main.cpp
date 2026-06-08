@@ -1,11 +1,103 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <esp_task_wdt.h>
+#include <time.h>
 #include "config.h"
+#include "ble_client.h"
+#include "handshake.h"
+#include "poller.h"
 
-void setup() {
-    Serial.begin(115200);
-    Serial.println("Hoymiles ESP32 bridge starting...");
+#define WDT_TIMEOUT_S 30
+
+static WiFiClient   s_wifi_client;
+static PubSubClient s_mqtt(s_wifi_client);
+
+static uint16_t s_tid = 1;
+static uint8_t  s_enc_rand[16] = {0};
+static bool     s_enc_rand_ready = false;
+
+static bool wifi_connect(void) {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    Serial.printf("[WiFi] Connecting to %s …\n", WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        if (millis() - start > WIFI_RETRY_MS) {
+            Serial.println("[WiFi] Timeout.");
+            return false;
+        }
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
+    configTime(0, 0, "pool.ntp.org");
+    return true;
 }
 
-void loop() {
-    delay(1000);
+static bool mqtt_connect(void) {
+    if (s_mqtt.connected()) return true;
+    Serial.printf("[MQTT] Connecting to %s:%d …\n", MQTT_HOST, MQTT_PORT);
+    char lwt_topic[128];
+    snprintf(lwt_topic, sizeof(lwt_topic), "%sstatus", MQTT_BASE_TOPIC);
+    if (!s_mqtt.connect(MQTT_CLIENT_ID, nullptr, nullptr, lwt_topic, 1, true, "offline")) {
+        Serial.printf("[MQTT] Failed, rc=%d\n", s_mqtt.state());
+        return false;
+    }
+    Serial.println("[MQTT] Connected.");
+    char ver_topic[128];
+    snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", MQTT_BASE_TOPIC);
+    s_mqtt.publish(ver_topic, "esp32-1.0.0", true);
+    return true;
+}
+
+static bool ble_connect_and_handshake(void) {
+    if (!ble_connect(BLE_DEVICE_NAME, nullptr)) return false;
+    if (!handshake_run(&s_tid, s_enc_rand)) {
+        ble_disconnect();
+        return false;
+    }
+    s_enc_rand_ready = true;
+    return true;
+}
+
+void setup(void) {
+    Serial.begin(115200);
+    Serial.println("[main] Starting Hoymiles ESP32 bridge.");
+
+    // Watchdog: 30s timeout, panic (reset) on expiry. This Arduino-ESP32 core
+    // exposes the legacy API esp_task_wdt_init(timeout_seconds, panic) rather
+    // than the newer esp_task_wdt_config_t / esp_task_wdt_reconfigure.
+    esp_task_wdt_init(WDT_TIMEOUT_S, true);
+    esp_task_wdt_add(NULL);
+
+    s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    s_mqtt.setBufferSize(512);
+    ble_init();
+}
+
+void loop(void) {
+    esp_task_wdt_reset();
+
+    if (!wifi_connect()) { delay(WIFI_RETRY_MS); return; }
+    if (!mqtt_connect()) { delay(MQTT_RETRY_MS); return; }
+
+    if (!ble_is_connected() || !s_enc_rand_ready) {
+        if (!ble_connect_and_handshake()) {
+            delay(BLE_RETRY_MS);
+            return;
+        }
+        char topic[128];
+        snprintf(topic, sizeof(topic), "%sstatus", MQTT_BASE_TOPIC);
+        s_mqtt.publish(topic, "online", true);
+    }
+
+    if (!poller_poll(s_mqtt, &s_tid, s_enc_rand)) {
+        handshake_clear_nvs();
+        s_enc_rand_ready = false;
+        ble_disconnect();
+    }
+
+    s_mqtt.loop();
+    delay(POLL_INTERVAL_MS);
 }
