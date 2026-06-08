@@ -58,8 +58,10 @@ typedef struct _SGSMO {
     int32_t power_limit;
 } SGSMO;
 
+typedef PB_BYTES_ARRAY_T(6) RealDataNewResDTO_time_ymd_hms_t;
 typedef struct _RealDataNewResDTO {
-    pb_callback_t time_ymd_hms;
+    bool has_time_ymd_hms;
+    RealDataNewResDTO_time_ymd_hms_t time_ymd_hms;
     bool has_cp;
     int32_t cp;
     bool has_error_code;
@@ -71,7 +73,8 @@ typedef struct _RealDataNewResDTO {
 } RealDataNewResDTO;
 
 typedef struct _RealDataNewReqDTO {
-    pb_callback_t device_serial_number;
+    bool has_device_serial_number;
+    char device_serial_number[32];
     bool has_timestamp;
     int32_t timestamp;
     bool has_ap;
@@ -98,12 +101,12 @@ extern "C" {
 /* Initializer values for message structs */
 #define PvMO_init_default                        {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define SGSMO_init_default                       {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define RealDataNewResDTO_init_default           {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
-#define RealDataNewReqDTO_init_default           {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, SGSMO_init_default, 0, {PvMO_init_default, PvMO_init_default, PvMO_init_default, PvMO_init_default}, false, 0, false, 0}
+#define RealDataNewResDTO_init_default           {false, {0, {0}}, false, 0, false, 0, false, 0, false, 0}
+#define RealDataNewReqDTO_init_default           {false, "", false, 0, false, 0, false, 0, false, 0, false, SGSMO_init_default, 0, {PvMO_init_default, PvMO_init_default, PvMO_init_default, PvMO_init_default}, false, 0, false, 0}
 #define PvMO_init_zero                           {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define SGSMO_init_zero                          {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
-#define RealDataNewResDTO_init_zero              {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0}
-#define RealDataNewReqDTO_init_zero              {{{NULL}, NULL}, false, 0, false, 0, false, 0, false, 0, false, SGSMO_init_zero, 0, {PvMO_init_zero, PvMO_init_zero, PvMO_init_zero, PvMO_init_zero}, false, 0, false, 0}
+#define RealDataNewResDTO_init_zero              {false, {0, {0}}, false, 0, false, 0, false, 0, false, 0}
+#define RealDataNewReqDTO_init_zero              {false, "", false, 0, false, 0, false, 0, false, 0, false, SGSMO_init_zero, 0, {PvMO_init_zero, PvMO_init_zero, PvMO_init_zero, PvMO_init_zero}, false, 0, false, 0}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define PvMO_serial_number_tag                   1
@@ -173,16 +176,16 @@ X(a, STATIC,   OPTIONAL, INT32,    power_limit,      13)
 #define SGSMO_DEFAULT NULL
 
 #define RealDataNewResDTO_FIELDLIST(X, a) \
-X(a, CALLBACK, OPTIONAL, BYTES,    time_ymd_hms,      1) \
+X(a, STATIC,   OPTIONAL, BYTES,    time_ymd_hms,      1) \
 X(a, STATIC,   OPTIONAL, INT32,    cp,                2) \
 X(a, STATIC,   OPTIONAL, INT32,    error_code,        3) \
 X(a, STATIC,   OPTIONAL, INT32,    offset,            4) \
 X(a, STATIC,   OPTIONAL, INT32,    time,              5)
-#define RealDataNewResDTO_CALLBACK pb_default_field_callback
+#define RealDataNewResDTO_CALLBACK NULL
 #define RealDataNewResDTO_DEFAULT NULL
 
 #define RealDataNewReqDTO_FIELDLIST(X, a) \
-X(a, CALLBACK, OPTIONAL, STRING,   device_serial_number,   1) \
+X(a, STATIC,   OPTIONAL, STRING,   device_serial_number,   1) \
 X(a, STATIC,   OPTIONAL, INT32,    timestamp,         2) \
 X(a, STATIC,   OPTIONAL, INT32,    ap,                3) \
 X(a, STATIC,   OPTIONAL, INT32,    cp,                4) \
@@ -191,7 +194,7 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  sgs_data,          9) \
 X(a, STATIC,   REPEATED, MESSAGE,  pv_data,          11) \
 X(a, STATIC,   OPTIONAL, UINT64,   dtu_power,        12) \
 X(a, STATIC,   OPTIONAL, UINT64,   dtu_daily_energy,  13)
-#define RealDataNewReqDTO_CALLBACK pb_default_field_callback
+#define RealDataNewReqDTO_CALLBACK NULL
 #define RealDataNewReqDTO_DEFAULT NULL
 #define RealDataNewReqDTO_sgs_data_MSGTYPE SGSMO
 #define RealDataNewReqDTO_pv_data_MSGTYPE PvMO
@@ -208,10 +211,10 @@ extern const pb_msgdesc_t RealDataNewReqDTO_msg;
 #define RealDataNewReqDTO_fields &RealDataNewReqDTO_msg
 
 /* Maximum encoded size of messages (where known) */
-/* RealDataNewResDTO_size depends on runtime parameters */
-/* RealDataNewReqDTO_size depends on runtime parameters */
-#define PROTO_REALDATANEW_PB_H_MAX_SIZE          SGSMO_size
+#define PROTO_REALDATANEW_PB_H_MAX_SIZE          RealDataNewReqDTO_size
 #define PvMO_size                                88
+#define RealDataNewReqDTO_size                   605
+#define RealDataNewResDTO_size                   52
 #define SGSMO_size                               143
 
 #ifdef __cplusplus

@@ -10,6 +10,7 @@
 #endif
 
 /* Struct definitions */
+typedef PB_BYTES_ARRAY_T(16) APPDtuInfoMO_enc_rand_t;
 typedef struct _APPDtuInfoMO {
     bool has_device_kind;
     int32_t device_kind;
@@ -23,11 +24,14 @@ typedef struct _APPDtuInfoMO {
     int64_t shls;
     bool has_type;
     int32_t type;
-    pb_callback_t enc_rand;
+    bool has_enc_rand;
+    APPDtuInfoMO_enc_rand_t enc_rand;
 } APPDtuInfoMO;
 
+typedef PB_BYTES_ARRAY_T(6) APPInfoDataResDTO_time_ymd_hms_t;
 typedef struct _APPInfoDataResDTO {
-    pb_callback_t time_ymd_hms;
+    bool has_time_ymd_hms;
+    APPInfoDataResDTO_time_ymd_hms_t time_ymd_hms;
     bool has_offset;
     int32_t offset;
     bool has_current_package;
@@ -57,11 +61,11 @@ extern "C" {
 #endif
 
 /* Initializer values for message structs */
-#define APPDtuInfoMO_init_default                {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
-#define APPInfoDataResDTO_init_default           {{{NULL}, NULL}, false, 0, false, 0, false, 0}
+#define APPDtuInfoMO_init_default                {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, {0, {0}}}
+#define APPInfoDataResDTO_init_default           {false, {0, {0}}, false, 0, false, 0, false, 0}
 #define APPInfoDataReqDTO_init_default           {false, "", false, 0, false, 0, false, 0, false, 0, false, APPDtuInfoMO_init_default}
-#define APPDtuInfoMO_init_zero                   {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}}
-#define APPInfoDataResDTO_init_zero              {{{NULL}, NULL}, false, 0, false, 0, false, 0}
+#define APPDtuInfoMO_init_zero                   {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, {0, {0}}}
+#define APPInfoDataResDTO_init_zero              {false, {0, {0}}, false, 0, false, 0, false, 0}
 #define APPInfoDataReqDTO_init_zero              {false, "", false, 0, false, 0, false, 0, false, 0, false, APPDtuInfoMO_init_zero}
 
 /* Field tags (for use in manual encoding/decoding) */
@@ -91,16 +95,16 @@ X(a, STATIC,   OPTIONAL, INT32,    dtu_hw_version,    3) \
 X(a, STATIC,   OPTIONAL, SINT64,   dfs,              24) \
 X(a, STATIC,   OPTIONAL, SINT64,   shls,             25) \
 X(a, STATIC,   OPTIONAL, INT32,    type,             26) \
-X(a, CALLBACK, OPTIONAL, BYTES,    enc_rand,         27)
-#define APPDtuInfoMO_CALLBACK pb_default_field_callback
+X(a, STATIC,   OPTIONAL, BYTES,    enc_rand,         27)
+#define APPDtuInfoMO_CALLBACK NULL
 #define APPDtuInfoMO_DEFAULT NULL
 
 #define APPInfoDataResDTO_FIELDLIST(X, a) \
-X(a, CALLBACK, OPTIONAL, BYTES,    time_ymd_hms,      1) \
+X(a, STATIC,   OPTIONAL, BYTES,    time_ymd_hms,      1) \
 X(a, STATIC,   OPTIONAL, INT32,    offset,            2) \
 X(a, STATIC,   OPTIONAL, INT32,    current_package,   3) \
 X(a, STATIC,   OPTIONAL, UINT32,   timestamp,         5)
-#define APPInfoDataResDTO_CALLBACK pb_default_field_callback
+#define APPInfoDataResDTO_CALLBACK NULL
 #define APPInfoDataResDTO_DEFAULT NULL
 
 #define APPInfoDataReqDTO_FIELDLIST(X, a) \
@@ -124,9 +128,10 @@ extern const pb_msgdesc_t APPInfoDataReqDTO_msg;
 #define APPInfoDataReqDTO_fields &APPInfoDataReqDTO_msg
 
 /* Maximum encoded size of messages (where known) */
-/* APPDtuInfoMO_size depends on runtime parameters */
-/* APPInfoDataResDTO_size depends on runtime parameters */
-/* APPInfoDataReqDTO_size depends on runtime parameters */
+#define APPDtuInfoMO_size                        88
+#define APPInfoDataReqDTO_size                   162
+#define APPInfoDataResDTO_size                   36
+#define PROTO_APPINFOMATIONDATA_PB_H_MAX_SIZE    APPInfoDataReqDTO_size
 
 #ifdef __cplusplus
 } /* extern "C" */

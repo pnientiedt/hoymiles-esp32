@@ -1,1 +1,3 @@
-RealDataNewReqDTO.pv_data    max_count:4
+RealDataNewReqDTO.pv_data               max_count:4
+RealDataNewReqDTO.device_serial_number  max_size:32
+RealDataNewResDTO.time_ymd_hms          max_size:6
