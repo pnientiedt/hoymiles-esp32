@@ -1,1 +1,4 @@
 .pio/
+
+# Per-deployment secrets — copy secrets.example.h to secrets.h
+src/secrets.h
