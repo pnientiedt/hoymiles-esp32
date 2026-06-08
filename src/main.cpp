@@ -12,6 +12,9 @@
 // Must stay well under WDT_TIMEOUT_S so the watchdog is fed during idle waits.
 #define WDT_FEED_SLICE_MS 250
 #define MQTT_BUFFER_SIZE 512
+// Wipe the paired encRand (forcing a full V0 re-pairing) only after this many
+// consecutive poll failures — a single transient timeout shouldn't trigger it.
+#define POLL_FAIL_THRESHOLD 3
 #define FW_VERSION "esp32-1.0.0"
 #define MQTT_STATUS_TOPIC MQTT_BASE_TOPIC "status"
 
@@ -21,6 +24,7 @@ static PubSubClient s_mqtt(s_wifi_client);
 static uint16_t s_tid = 1;
 static uint8_t  s_enc_rand[16] = {0};
 static bool     s_enc_rand_ready = false;
+static int      s_poll_failures = 0;
 
 static bool wifi_connect(void) {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -95,9 +99,20 @@ void loop(void) {
     }
 
     if (!poller_poll(s_mqtt, &s_tid, s_enc_rand)) {
-        handshake_clear_nvs();
+        s_poll_failures++;
+        // Drop the BLE link so the next loop re-handshakes (reloading encRand
+        // from NVS — cheap). Only wipe NVS, forcing a full V0 re-pairing, once
+        // failures persist; a one-off timeout must not clear the pairing.
+        if (s_poll_failures >= POLL_FAIL_THRESHOLD) {
+            Serial.printf("[main] %d consecutive poll failures, clearing NVS.\n",
+                          s_poll_failures);
+            handshake_clear_nvs();
+            s_poll_failures = 0;
+        }
         s_enc_rand_ready = false;
         ble_disconnect();
+    } else {
+        s_poll_failures = 0;
     }
 
     s_mqtt.loop();

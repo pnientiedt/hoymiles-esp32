@@ -37,9 +37,14 @@ static void rx_handler(const uint8_t *data, size_t len) {
     }
 }
 
-static bool wait_rx(uint32_t timeout_ms) {
-    s_rx_ready = false;
+// Arm RX accumulation. MUST be called before ble_write() so a fast response
+// notification arriving before wait_rx() runs cannot be dropped.
+static void rx_reset(void) {
     s_rx_len = 0;
+    s_rx_ready = false;
+}
+
+static bool wait_rx(uint32_t timeout_ms) {
     uint32_t start = millis();
     while (!s_rx_ready) {
         if (millis() - start > timeout_ms) return false;
@@ -95,9 +100,18 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
     uint16_t cmd, resp_tid, rcrc, rlen;
     if (!frame_parse_header(buf, buf_len, &cmd, &resp_tid, &rcrc, &rlen)) return false;
 
+    // Use the frame's declared length, not the total bytes accumulated in the
+    // RX buffer. Trailing notification bytes must not be folded into the
+    // ciphertext (that would shift the tag pointer and break CRC/GCM).
+    // Frame layout: HM_HEADER_LEN header + ciphertext + 16-byte GCM tag, where
+    // rlen = HM_HEADER_LEN + ct_len.
+    if (rlen < HM_HEADER_LEN || (size_t)rlen + 16 > buf_len) {
+        Serial.println("[PL] Bad frame length.");
+        return false;
+    }
     const uint8_t *ct = frame_payload(buf, buf_len);
-    size_t ct_len = buf_len - HM_HEADER_LEN - 16;  // strip header and 16-byte GCM tag
-    const uint8_t *tag = buf + buf_len - 16;
+    size_t ct_len = (size_t)rlen - HM_HEADER_LEN;  // ciphertext only, no tag
+    const uint8_t *tag = buf + rlen;
 
     // CRC validation (over ciphertext only, no tag)
     if (crc16_modbus(ct, ct_len) != rcrc) {
@@ -152,7 +166,8 @@ static void publish_str(PubSubClient &mqtt, const char *subtopic, const char *va
 bool poller_poll(PubSubClient &mqtt, uint16_t *tid, const uint8_t enc_rand[16]) {
     ble_set_rx_callback(rx_handler);
 
-    // Send first page request
+    // Send first page request (arm RX before the write to avoid a race)
+    rx_reset();
     if (!send_real_req(tid, enc_rand, 0)) {
         Serial.println("[PL] Send request failed.");
         return false;
@@ -175,13 +190,16 @@ bool poller_poll(PubSubClient &mqtt, uint16_t *tid, const uint8_t enc_rand[16]) 
 
     // Fetch additional pages if ap > 1
     for (int cp = 1; cp < combined.ap; cp++) {
-        if (!send_real_req(tid, enc_rand, cp)) break;
-        if (!wait_rx(RESPONSE_TIMEOUT_MS)) break;
+        // A paged response is all-or-nothing: any failure mid-paging aborts the
+        // whole poll so we never publish a partial merge (spec: discard partial).
+        rx_reset();
+        if (!send_real_req(tid, enc_rand, cp)) return false;
+        if (!wait_rx(RESPONSE_TIMEOUT_MS)) return false;
 
-        if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &cmd, &resp_tid, &rcrc, &rlen)) continue;
+        if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &cmd, &resp_tid, &rcrc, &rlen)) return false;
 
         RealDataNewReqDTO page = RealDataNewReqDTO_init_zero;
-        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, &page)) continue;
+        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, &page)) return false;
 
         // Merge pv_data from this page
         for (pb_size_t i = 0; i < page.pv_data_count; i++) {

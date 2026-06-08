@@ -45,9 +45,14 @@ static void rx_handler(const uint8_t *data, size_t len) {
     }
 }
 
-static bool wait_for_rx(uint32_t timeout_ms) {
-    s_rx_ready = false;
+// Arm RX accumulation. MUST be called before ble_write() so a fast response
+// notification arriving before wait_for_rx() runs cannot be dropped.
+static void rx_reset(void) {
     s_rx_len = 0;
+    s_rx_ready = false;
+}
+
+static bool wait_for_rx(uint32_t timeout_ms) {
     uint32_t start = millis();
     while (!s_rx_ready) {
         if (millis() - start > timeout_ms) return false;
@@ -114,8 +119,10 @@ static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
         return false;
     }
 
-    // Register callback before writing
+    // Register callback and arm RX before writing, so a fast response cannot
+    // land in the window between the write and wait_for_rx().
     ble_set_rx_callback(rx_handler);
+    rx_reset();
 
     if (!ble_write(frame, frame_len)) {
         Serial.println("[HS] V0: ble_write failed");
@@ -245,8 +252,10 @@ static bool do_commcmd(uint16_t *tid, const uint8_t enc_rand[16], int32_t action
     // Increment tid after building frame
     (*tid)++;
 
-    // Register callback before writing
+    // Register callback and arm RX before writing, so a fast response cannot
+    // land in the window between the write and wait_for_rx().
     ble_set_rx_callback(rx_handler);
+    rx_reset();
 
     if (!ble_write(frame, frame_len)) {
         Serial.println("[HS] CommCmd: ble_write failed");
