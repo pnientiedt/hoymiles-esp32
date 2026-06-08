@@ -1,0 +1,27 @@
+syntax = "proto2";
+
+message APPDtuInfoMO {
+    optional int32  device_kind     = 1;
+    optional int32  dtu_sw_version  = 2;
+    optional int32  dtu_hw_version  = 3;
+    optional sint64 dfs             = 24;
+    optional sint64 shls            = 25;
+    optional int32  type            = 26;
+    optional bytes  enc_rand        = 27;
+}
+
+message APPInfoDataResDTO {
+    optional bytes  time_ymd_hms    = 1;
+    optional int32  offset          = 2;
+    optional int32  current_package = 3;
+    optional uint32 timestamp       = 5;
+}
+
+message APPInfoDataReqDTO {
+    optional string    dtu_serial_number = 1;
+    optional uint32    timestamp         = 2;
+    optional int32     device_number     = 3;
+    optional int32     package_number    = 5;
+    optional int32     current_package   = 6;
+    optional APPDtuInfoMO dtu_info       = 8;
+}
