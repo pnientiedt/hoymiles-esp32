@@ -16,6 +16,9 @@
 // 12-char serial tail to pin one. Empty = connect to the first RMI- device.
 #define INVERTER_SN_FILTER  ""
 
+// MQTT topics are <prefix><discovered-serial>/...  built at runtime.
+#define MQTT_TOPIC_PREFIX "hoymiles/"
+
 // MQTT base topic: hoymiles/<sn>/
 #define MQTT_BASE_TOPIC "hoymiles/" INVERTER_SN "/"
 

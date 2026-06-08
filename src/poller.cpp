@@ -146,16 +146,18 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
 // MQTT helpers
 // ---------------------------------------------------------------------------
 
+static const char *s_base_topic = "";
+
 static void publish_float(PubSubClient &mqtt, const char *subtopic, float value) {
     char topic[128], payload[32];
-    snprintf(topic, sizeof(topic), "%s%s", MQTT_BASE_TOPIC, subtopic);
+    snprintf(topic, sizeof(topic), "%s%s", s_base_topic, subtopic);
     snprintf(payload, sizeof(payload), "%.3f", value);
     mqtt.publish(topic, payload, true);
 }
 
 static void publish_str(PubSubClient &mqtt, const char *subtopic, const char *value) {
     char topic[128];
-    snprintf(topic, sizeof(topic), "%s%s", MQTT_BASE_TOPIC, subtopic);
+    snprintf(topic, sizeof(topic), "%s%s", s_base_topic, subtopic);
     mqtt.publish(topic, value, true);
 }
 
@@ -163,7 +165,9 @@ static void publish_str(PubSubClient &mqtt, const char *subtopic, const char *va
 // Main poll entry-point
 // ---------------------------------------------------------------------------
 
-bool poller_poll(PubSubClient &mqtt, uint16_t *tid, const uint8_t enc_rand[16]) {
+bool poller_poll(PubSubClient &mqtt, const char *base_topic,
+                 uint16_t *tid, const uint8_t enc_rand[16]) {
+    s_base_topic = base_topic;
     ble_set_rx_callback(rx_handler);
 
     // Send first page request (arm RX before the write to avoid a race)

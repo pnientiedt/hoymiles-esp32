@@ -26,6 +26,7 @@ static uint8_t  s_enc_rand[16] = {0};
 static bool     s_enc_rand_ready = false;
 static int      s_poll_failures = 0;
 static char     s_sn[16] = {0};
+static char     s_base_topic[64] = {0};
 
 static bool wifi_connect(void) {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -63,6 +64,7 @@ static bool mqtt_connect(void) {
 static bool ble_connect_and_handshake(void) {
     if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn), nullptr)) return false;
     Serial.printf("[main] Inverter SN: %s\n", s_sn);
+    snprintf(s_base_topic, sizeof(s_base_topic), "%s%s/", MQTT_TOPIC_PREFIX, s_sn);
     if (!handshake_run(s_sn, &s_tid, s_enc_rand)) {
         ble_disconnect();
         return false;
@@ -100,7 +102,7 @@ void loop(void) {
         s_mqtt.publish(MQTT_STATUS_TOPIC, "online", true);
     }
 
-    if (!poller_poll(s_mqtt, &s_tid, s_enc_rand)) {
+    if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand)) {
         s_poll_failures++;
         // Drop the BLE link so the next loop re-handshakes (reloading encRand
         // from NVS — cheap). Only wipe NVS, forcing a full V0 re-pairing, once
