@@ -90,9 +90,9 @@ static bool send_real_req(uint16_t *tid, const uint8_t enc_rand[16], int cp) {
 // ---------------------------------------------------------------------------
 
 static bool decode_page(const uint8_t *buf, size_t buf_len,
-                        uint16_t resp_tid, const uint8_t enc_rand[16],
+                        const uint8_t enc_rand[16],
                         RealDataNewReqDTO *out) {
-    uint16_t cmd, rcrc, rlen;
+    uint16_t cmd, resp_tid, rcrc, rlen;
     if (!frame_parse_header(buf, buf_len, &cmd, &resp_tid, &rcrc, &rlen)) return false;
 
     const uint8_t *ct = frame_payload(buf, buf_len);
@@ -114,7 +114,7 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
     aad[2] = resp_tid & 0xFF;
     aad[3] = (resp_tid >> 8) & 0xFF;
 
-    uint8_t pt[1024];
+    uint8_t pt[2048];
     if (!v1_decrypt(ct, ct_len, key, nonce, aad, 4, tag, pt)) {
         Serial.println("[PL] GCM auth tag failure.");
         return false;
@@ -169,7 +169,7 @@ bool poller_poll(PubSubClient &mqtt, uint16_t *tid, const uint8_t enc_rand[16]) 
     }
 
     RealDataNewReqDTO combined = RealDataNewReqDTO_init_zero;
-    if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, resp_tid, enc_rand, &combined)) {
+    if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, &combined)) {
         return false;
     }
 
@@ -181,7 +181,7 @@ bool poller_poll(PubSubClient &mqtt, uint16_t *tid, const uint8_t enc_rand[16]) 
         if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &cmd, &resp_tid, &rcrc, &rlen)) continue;
 
         RealDataNewReqDTO page = RealDataNewReqDTO_init_zero;
-        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, resp_tid, enc_rand, &page)) continue;
+        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, &page)) continue;
 
         // Merge pv_data from this page
         for (pb_size_t i = 0; i < page.pv_data_count; i++) {
