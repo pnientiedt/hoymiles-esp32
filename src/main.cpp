@@ -9,6 +9,11 @@
 #include "poller.h"
 
 #define WDT_TIMEOUT_S 30
+// Must stay well under WDT_TIMEOUT_S so the watchdog is fed during idle waits.
+#define WDT_FEED_SLICE_MS 250
+#define MQTT_BUFFER_SIZE 512
+#define FW_VERSION "esp32-1.0.0"
+#define MQTT_STATUS_TOPIC MQTT_BASE_TOPIC "status"
 
 static WiFiClient   s_wifi_client;
 static PubSubClient s_mqtt(s_wifi_client);
@@ -27,6 +32,7 @@ static bool wifi_connect(void) {
             Serial.println("[WiFi] Timeout.");
             return false;
         }
+        esp_task_wdt_reset();
         delay(500);
         Serial.print(".");
     }
@@ -38,16 +44,14 @@ static bool wifi_connect(void) {
 static bool mqtt_connect(void) {
     if (s_mqtt.connected()) return true;
     Serial.printf("[MQTT] Connecting to %s:%d …\n", MQTT_HOST, MQTT_PORT);
-    char lwt_topic[128];
-    snprintf(lwt_topic, sizeof(lwt_topic), "%sstatus", MQTT_BASE_TOPIC);
-    if (!s_mqtt.connect(MQTT_CLIENT_ID, nullptr, nullptr, lwt_topic, 1, true, "offline")) {
+    if (!s_mqtt.connect(MQTT_CLIENT_ID, nullptr, nullptr, MQTT_STATUS_TOPIC, 1, true, "offline")) {
         Serial.printf("[MQTT] Failed, rc=%d\n", s_mqtt.state());
         return false;
     }
     Serial.println("[MQTT] Connected.");
     char ver_topic[128];
     snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", MQTT_BASE_TOPIC);
-    s_mqtt.publish(ver_topic, "esp32-1.0.0", true);
+    s_mqtt.publish(ver_topic, FW_VERSION, true);
     return true;
 }
 
@@ -72,7 +76,7 @@ void setup(void) {
     esp_task_wdt_add(NULL);
 
     s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
-    s_mqtt.setBufferSize(512);
+    s_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
     ble_init();
 }
 
@@ -87,9 +91,7 @@ void loop(void) {
             delay(BLE_RETRY_MS);
             return;
         }
-        char topic[128];
-        snprintf(topic, sizeof(topic), "%sstatus", MQTT_BASE_TOPIC);
-        s_mqtt.publish(topic, "online", true);
+        s_mqtt.publish(MQTT_STATUS_TOPIC, "online", true);
     }
 
     if (!poller_poll(s_mqtt, &s_tid, s_enc_rand)) {
@@ -107,6 +109,6 @@ void loop(void) {
     while ((millis() - wait_start) < POLL_INTERVAL_MS) {
         esp_task_wdt_reset();
         s_mqtt.loop();
-        delay(250);
+        delay(WDT_FEED_SLICE_MS);
     }
 }
