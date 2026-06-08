@@ -16,7 +16,6 @@
 // consecutive poll failures — a single transient timeout shouldn't trigger it.
 #define POLL_FAIL_THRESHOLD 3
 #define FW_VERSION "esp32-1.0.0"
-#define MQTT_STATUS_TOPIC MQTT_BASE_TOPIC "status"
 
 static WiFiClient   s_wifi_client;
 static PubSubClient s_mqtt(s_wifi_client);
@@ -27,6 +26,7 @@ static bool     s_enc_rand_ready = false;
 static int      s_poll_failures = 0;
 static char     s_sn[16] = {0};
 static char     s_base_topic[64] = {0};
+static char     s_status_topic[80] = {0};
 
 static bool wifi_connect(void) {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -48,16 +48,18 @@ static bool wifi_connect(void) {
 }
 
 static bool mqtt_connect(void) {
+    if (s_status_topic[0] == '\0') return false;
     if (s_mqtt.connected()) return true;
     Serial.printf("[MQTT] Connecting to %s:%d …\n", MQTT_HOST, MQTT_PORT);
-    if (!s_mqtt.connect(MQTT_CLIENT_ID, nullptr, nullptr, MQTT_STATUS_TOPIC, 1, true, "offline")) {
+    if (!s_mqtt.connect(MQTT_CLIENT_ID, nullptr, nullptr, s_status_topic, 1, true, "offline")) {
         Serial.printf("[MQTT] Failed, rc=%d\n", s_mqtt.state());
         return false;
     }
     Serial.println("[MQTT] Connected.");
-    char ver_topic[128];
-    snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", MQTT_BASE_TOPIC);
+    char ver_topic[96];
+    snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", s_base_topic);
     s_mqtt.publish(ver_topic, FW_VERSION, true);
+    s_mqtt.publish(s_status_topic, "online", true);
     return true;
 }
 
@@ -65,6 +67,7 @@ static bool ble_connect_and_handshake(void) {
     if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn), nullptr)) return false;
     Serial.printf("[main] Inverter SN: %s\n", s_sn);
     snprintf(s_base_topic, sizeof(s_base_topic), "%s%s/", MQTT_TOPIC_PREFIX, s_sn);
+    snprintf(s_status_topic, sizeof(s_status_topic), "%sstatus", s_base_topic);
     if (!handshake_run(s_sn, &s_tid, s_enc_rand)) {
         ble_disconnect();
         return false;
@@ -92,15 +95,15 @@ void loop(void) {
     esp_task_wdt_reset();
 
     if (!wifi_connect()) { delay(WIFI_RETRY_MS); return; }
-    if (!mqtt_connect()) { delay(MQTT_RETRY_MS); return; }
 
     if (!ble_is_connected() || !s_enc_rand_ready) {
         if (!ble_connect_and_handshake()) {
             delay(BLE_RETRY_MS);
             return;
         }
-        s_mqtt.publish(MQTT_STATUS_TOPIC, "online", true);
     }
+
+    if (!mqtt_connect()) { delay(MQTT_RETRY_MS); return; }
 
     if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand)) {
         s_poll_failures++;
