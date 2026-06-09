@@ -81,7 +81,7 @@ static void save_enc_rand_to_nvs(const uint8_t enc_rand[16]) {
     prefs.end();
 }
 
-static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
+static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16]) {
     // Encode APPInfoDataResDTO
     APPInfoDataResDTO req = APPInfoDataResDTO_init_default;
     req.has_timestamp = true;
@@ -99,8 +99,8 @@ static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
 
     // Derive V0 key and IV
     uint8_t key[16], iv[16];
-    v0_derive_key(INVERTER_SN, key);
-    v0_derive_iv(CMD_APP_INFO_REQ, *tid, INVERTER_SN, iv);
+    v0_derive_key(sn, key);
+    v0_derive_iv(CMD_APP_INFO_REQ, *tid, sn, iv);
 
     // V0 encrypt (PKCS7 padding adds up to 16 bytes)
     uint8_t ct[TX_BUF_LEN + 16];
@@ -163,8 +163,8 @@ static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
 
     // V0 decrypt with response cmd and tid
     uint8_t rkey[16], riv[16];
-    v0_derive_key(INVERTER_SN, rkey);
-    v0_derive_iv(rcmd, rtid, INVERTER_SN, riv);
+    v0_derive_key(sn, rkey);
+    v0_derive_iv(rcmd, rtid, sn, riv);
 
     uint8_t pt[RX_BUF_LEN];
     size_t pt_len = v0_decrypt(payload, payload_ct_len, rkey, riv, pt);
@@ -199,11 +199,11 @@ static bool do_v0_pairing(uint16_t *tid, uint8_t enc_rand_out[16]) {
     return true;
 }
 
-static bool do_commcmd(uint16_t *tid, const uint8_t enc_rand[16], int32_t action) {
+static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16], int32_t action) {
     // Encode CommandResDTO
     CommandResDTO cmd_msg = CommandResDTO_init_default;
     cmd_msg.has_dtu_sn = true;
-    strncpy(cmd_msg.dtu_sn, INVERTER_SN, sizeof(cmd_msg.dtu_sn) - 1);
+    strncpy(cmd_msg.dtu_sn, sn, sizeof(cmd_msg.dtu_sn) - 1);
     cmd_msg.dtu_sn[sizeof(cmd_msg.dtu_sn) - 1] = '\0';
     cmd_msg.has_time = true;
     cmd_msg.time = (int32_t)time(nullptr);
@@ -286,14 +286,14 @@ static bool do_commcmd(uint16_t *tid, const uint8_t enc_rand[16], int32_t action
     return true;
 }
 
-bool handshake_run(uint16_t *tid, uint8_t enc_rand_out[16]) {
+bool handshake_run(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16]) {
     // Register callback first
     ble_set_rx_callback(rx_handler);
 
     // Try to load encRand from NVS; fall back to V0 pairing
     if (!load_enc_rand_from_nvs(enc_rand_out)) {
         Serial.println("[HS] No encRand in NVS, running V0 pairing...");
-        if (!do_v0_pairing(tid, enc_rand_out)) {
+        if (!do_v0_pairing(sn, tid, enc_rand_out)) {
             Serial.println("[HS] V0 pairing failed");
             return false;
         }
@@ -304,7 +304,7 @@ bool handshake_run(uint16_t *tid, uint8_t enc_rand_out[16]) {
 
     // CommCmd login (action=64)
     Serial.println("[HS] CommCmd login...");
-    if (!do_commcmd(tid, enc_rand_out, COMMCMD_LOGIN)) {
+    if (!do_commcmd(sn, tid, enc_rand_out, COMMCMD_LOGIN)) {
         Serial.println("[HS] CommCmd login failed");
         return false;
     }
@@ -312,7 +312,7 @@ bool handshake_run(uint16_t *tid, uint8_t enc_rand_out[16]) {
 
     // CommCmd time-sync (action=104)
     Serial.println("[HS] CommCmd time-sync...");
-    if (!do_commcmd(tid, enc_rand_out, COMMCMD_TIME_SYNC)) {
+    if (!do_commcmd(sn, tid, enc_rand_out, COMMCMD_TIME_SYNC)) {
         Serial.println("[HS] CommCmd time-sync failed");
         return false;
     }

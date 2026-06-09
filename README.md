@@ -14,7 +14,7 @@ DTU/S-Miles gateway is required.
 ```
    ESP32                                   Hoymiles HMS-800-2WB
    ┌──────────────────────────┐  BLE GATT  ┌────────────────────┐
-   │ WiFi → MQTT → BLE → poll │◄──────────►│   inverter radio   │
+   │ WiFi → BLE → MQTT → poll │◄──────────►│   inverter radio   │
    └──────────────┬───────────┘            └────────────────────┘
                   │ WiFi / MQTT
                   ▼
@@ -56,15 +56,16 @@ cp src/secrets.example.h src/secrets.h
 |---|---|
 | `WIFI_SSID` / `WIFI_PASSWORD` | Your 2.4 GHz WiFi credentials |
 | `MQTT_HOST` | Your MQTT broker address |
-| `BLE_DEVICE_NAME` | The inverter's BLE name, `RMI-XXXXXXXXXXXX` |
-| `INVERTER_SN` | The 12 chars after `RMI-` (used for topics + key derivation) |
 
-Find `BLE_DEVICE_NAME` with any BLE scanner app (e.g. nRF Connect) — the
-inverter advertises as `RMI-` followed by its serial tail.
+The firmware finds the inverter automatically: it scans for a BLE device whose
+name starts with `RMI-` and reads the 12-char serial tail from the advertisement.
+No manual serial entry is required. If several Hoymiles inverters are in BLE range,
+set `INVERTER_SN_FILTER` in `src/config.h` to the exact 12-char serial tail of the
+one you want to pin.
 
-Non-secret tunables (MQTT port/client-id, topic structure, `POLL_INTERVAL_MS`,
-retry/timeout intervals) live in the versioned `src/config.h`, which `#include`s
-`secrets.h`.
+Non-secret tunables (`POLL_INTERVAL_MS`, retry/timeout intervals, `BLE_NAME_PREFIX`,
+`MQTT_TOPIC_PREFIX`, `INVERTER_SN_FILTER`) live in the versioned `src/config.h`,
+which `#include`s `secrets.h`.
 
 ## Test
 
@@ -99,9 +100,9 @@ python3 -m platformio run -e esp32 -t upload
 python3 -m platformio device monitor -b 115200
 ```
 
-A healthy boot log walks through: WiFi connect → MQTT connect → BLE scan/connect
-→ handshake (`encRand` from NVS or fresh V0 pairing) → `[PL] Published …` every
-30 s.
+A healthy boot log walks through: WiFi connect → BLE scan/connect → handshake
+(`encRand` from NVS or fresh V0 pairing) → MQTT connect → `[PL] Published …`
+every 30 s.
 
 Then verify on the broker — every topic is retained:
 
@@ -111,7 +112,8 @@ mosquitto_sub -h <MQTT_HOST> -t 'hoymiles/#' -v
 
 ## MQTT topics
 
-All under `hoymiles/<INVERTER_SN>/`:
+All under `hoymiles/<INVERTER_SN>/`, where `<INVERTER_SN>` is the 12-char serial
+tail auto-discovered from the inverter's `RMI-` BLE advertisement:
 
 | Topic | Unit | Notes |
 |---|---|---|
@@ -135,8 +137,9 @@ All under `hoymiles/<INVERTER_SN>/`:
 
 ## Troubleshooting
 
-- **`Device 'RMI-…' not found`** — wrong `BLE_DEVICE_NAME`, or out of range, or
-  the inverter is asleep (no PV at night → no BLE).
+- **`No device matching 'RMI-*' found`** — inverter out of BLE range, or asleep (no PV
+  input at night → radio off). If multiple inverters are nearby, set
+  `INVERTER_SN_FILTER` in `config.h` to the exact serial tail.
 - **`GCM auth tag failure` / decrypt errors after working before** — a stale
   pairing. After enough consecutive failures the firmware clears NVS and re-pairs
   automatically; a power-cycle also forces a fresh pairing attempt.
