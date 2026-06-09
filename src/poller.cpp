@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <esp_task_wdt.h>
 
 #define CMD_REAL  0xA311
 
@@ -48,6 +49,7 @@ static bool wait_rx(uint32_t timeout_ms) {
     uint32_t start = millis();
     while (!s_rx_ready) {
         if (millis() - start > timeout_ms) return false;
+        esp_task_wdt_reset();
         delay(5);
     }
     return true;
@@ -193,7 +195,11 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
     }
 
     // Fetch additional pages if ap > 1
-    for (int cp = 1; cp < combined.ap; cp++) {
+    // Clamp device-reported page count to a sane max; a corrupt/large ap must
+    // not spin many 5s request/response cycles (watchdog risk).
+    int pages = combined.ap;
+    if (pages > 8) pages = 8;
+    for (int cp = 1; cp < pages; cp++) {
         // A paged response is all-or-nothing: any failure mid-paging aborts the
         // whole poll so we never publish a partial merge (spec: discard partial).
         rx_reset();

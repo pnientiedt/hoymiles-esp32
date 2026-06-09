@@ -11,6 +11,7 @@
 #include <pb_encode.h>
 #include <time.h>
 #include <string.h>
+#include <esp_task_wdt.h>
 
 #define CMD_APP_INFO_REQ  0xA201
 #define CMD_APP_INFO_RES  0xA301
@@ -56,6 +57,7 @@ static bool wait_for_rx(uint32_t timeout_ms) {
     uint32_t start = millis();
     while (!s_rx_ready) {
         if (millis() - start > timeout_ms) return false;
+        esp_task_wdt_reset();
         delay(10);
     }
     return true;

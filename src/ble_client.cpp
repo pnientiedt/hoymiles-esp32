@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <atomic>
 #include <string.h>
+#include <esp_task_wdt.h>
 
 #define SVC_UUID  "0000e0ff-3c17-d293-8e48-14fe2e4da212"
 #define TX_UUID   "0000ffe1-0000-1000-8000-00805f9b34fb"
@@ -51,7 +52,8 @@ bool ble_connect(const char *name_prefix, const char *sn_filter,
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(100);
-    NimBLEScanResults results = scan->start(10);
+    NimBLEScanResults results = scan->start(5);
+    esp_task_wdt_reset();
 
     size_t prefix_len = strlen(name_prefix);
     NimBLEAddress target_addr;
@@ -87,6 +89,7 @@ bool ble_connect(const char *name_prefix, const char *sn_filter,
         s_client = nullptr;
         return false;
     }
+    esp_task_wdt_reset();
 
     auto *svc = s_client->getService(SVC_UUID);
     if (!svc) {
