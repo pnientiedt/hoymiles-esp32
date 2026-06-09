@@ -61,6 +61,9 @@ static bool wait_rx(uint32_t timeout_ms) {
 // ---------------------------------------------------------------------------
 
 static bool send_real_req(uint16_t *tid, const uint8_t enc_rand[16], int cp) {
+    // NOTE: the DTU acts as the "server", so the ESP32 SENDS the library's
+    // ...ResDTO and DECODES the ...ReqDTO. This inversion is intentional and
+    // mirrors the hoymiles-wifi reference. Verify against a device capture.
     RealDataNewResDTO req = RealDataNewResDTO_init_zero;
     req.has_cp = true;
     req.cp = cp;

@@ -67,6 +67,30 @@ void test_frame_parse_header_too_short(void) {
     TEST_ASSERT_FALSE(ok);
 }
 
+void test_frame_payload_offset_and_guard(void) {
+    uint8_t ct[] = {0xAA, 0xBB};
+    uint8_t buf[64];
+    size_t n = frame_build(buf, sizeof(buf), 0xA311, 7, ct, 2, NULL);
+    TEST_ASSERT_TRUE(n > 0);
+    const uint8_t *p = frame_payload(buf, n);
+    TEST_ASSERT_EQUAL_PTR(buf + 10, p);
+    TEST_ASSERT_NULL(frame_payload(buf, 5));  // too short -> NULL
+}
+
+void test_frame_roundtrip_crc(void) {
+    uint8_t ct[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01};
+    uint8_t buf[64];
+    size_t n = frame_build(buf, sizeof(buf), 0xA311, 9, ct, 5, NULL);
+    uint16_t cmd, tid, crc, len;
+    TEST_ASSERT_TRUE(frame_parse_header(buf, n, &cmd, &tid, &crc, &len));
+    TEST_ASSERT_EQUAL_HEX16(0xA311, cmd);
+    TEST_ASSERT_EQUAL_HEX16(9, tid);
+    TEST_ASSERT_EQUAL_HEX16(15, len);
+    const uint8_t *p = frame_payload(buf, n);
+    TEST_ASSERT_EQUAL_HEX16(crc16_modbus(ct, 5), crc);
+    TEST_ASSERT_EQUAL_MEMORY(ct, p, 5);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_frame_build_v0_no_tag);
@@ -75,5 +99,7 @@ int main(void) {
     RUN_TEST(test_frame_parse_header_valid);
     RUN_TEST(test_frame_parse_header_bad_magic);
     RUN_TEST(test_frame_parse_header_too_short);
+    RUN_TEST(test_frame_payload_offset_and_guard);
+    RUN_TEST(test_frame_roundtrip_crc);
     return UNITY_END();
 }

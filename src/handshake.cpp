@@ -86,6 +86,9 @@ static void save_enc_rand_to_nvs(const uint8_t enc_rand[16]) {
 
 static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16]) {
     // Encode APPInfoDataResDTO
+    // NOTE: the DTU acts as the "server", so the ESP32 SENDS the library's
+    // ...ResDTO and DECODES the ...ReqDTO. This inversion is intentional and
+    // mirrors the hoymiles-wifi reference. Verify against a device capture.
     APPInfoDataResDTO req = APPInfoDataResDTO_init_default;
     req.has_timestamp = true;
     req.timestamp = (uint32_t)time(nullptr);
