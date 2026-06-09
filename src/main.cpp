@@ -91,6 +91,7 @@ void setup(void) {
     esp_task_wdt_add(NULL);
 
     s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    // Authoritative MQTT buffer control (runtime); PubSubClient reallocates here.
     s_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
     ble_init();
 }

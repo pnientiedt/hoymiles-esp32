@@ -2,3 +2,6 @@
 
 # Per-deployment secrets — copy secrets.example.h to secrets.h
 src/secrets.h
+
+# Local agent worktree/tooling directory
+.claude/
