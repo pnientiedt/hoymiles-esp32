@@ -176,6 +176,12 @@ static void publish_str(PubSubClient &mqtt, const char *subtopic, const char *va
     mqtt.publish(topic, value, true);
 }
 
+static bool publish_str_checked(PubSubClient &mqtt, const char *subtopic, const char *value) {
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s%s", s_base_topic, subtopic);
+    return mqtt.publish(topic, value, true);
+}
+
 // ---------------------------------------------------------------------------
 // Main poll entry-point
 // ---------------------------------------------------------------------------
@@ -266,9 +272,15 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
     publish_float(mqtt, "energy_today", combined.dtu_daily_energy / 1000.0f);
     publish_float(mqtt, "energy_total", total_energy_kWh);
 
-    char ts[16];
-    snprintf(ts, sizeof(ts), "%lu", (unsigned long)time(nullptr));
-    publish_str(mqtt, "last_seen", ts);
+    time_t now = time(nullptr);
+    if (now > 1700000000) {
+        char ts[16];
+        snprintf(ts, sizeof(ts), "%lu", (unsigned long)now);
+        if (!publish_str_checked(mqtt, "last_seen", ts)) {
+            Serial.println("[PL] MQTT publish failed.");
+            return false;
+        }
+    }
 
     Serial.printf("[PL] Published. ac_power=%.1fW  pv_panels=%d\n",
                   combined.has_sgs_data ? combined.sgs_data.active_power / 10.0f : 0.0f,

@@ -44,6 +44,11 @@ static bool wifi_connect(void) {
     }
     Serial.printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
     configTime(0, 0, "pool.ntp.org");
+    uint32_t ntp_start = millis();
+    while (time(nullptr) < 1700000000UL && millis() - ntp_start < 8000) {
+        esp_task_wdt_reset();
+        delay(200);
+    }
     return true;
 }
 
@@ -59,7 +64,6 @@ static bool mqtt_connect(void) {
     char ver_topic[96];
     snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", s_base_topic);
     s_mqtt.publish(ver_topic, FW_VERSION, true);
-    s_mqtt.publish(s_status_topic, "online", true);
     return true;
 }
 
@@ -120,6 +124,7 @@ void loop(void) {
         ble_disconnect();
     } else {
         s_poll_failures = 0;
+        s_mqtt.publish(s_status_topic, "online", true);
     }
 
     s_mqtt.loop();
