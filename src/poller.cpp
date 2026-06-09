@@ -23,6 +23,7 @@ static volatile size_t   s_rx_len = 0;
 static volatile bool     s_rx_ready = false;
 
 static void rx_handler(const uint8_t *data, size_t len) {
+    if (s_rx_ready) return;
     if (s_rx_len + len <= sizeof(s_rx_buf)) {
         memcpy((uint8_t *)s_rx_buf + s_rx_len, data, len);
         s_rx_len += len;

@@ -23,13 +23,14 @@
 #define COMMCMD_LOGIN     64
 #define COMMCMD_TIME_SYNC 104
 
-static uint8_t  s_rx_buf[RX_BUF_LEN];
+static volatile uint8_t  s_rx_buf[RX_BUF_LEN];
 static volatile size_t   s_rx_len   = 0;
 static volatile bool     s_rx_ready = false;
 
 static void rx_handler(const uint8_t *data, size_t len) {
+    if (s_rx_ready) return;
     if (s_rx_len + len <= RX_BUF_LEN) {
-        memcpy(s_rx_buf + s_rx_len, data, len);
+        memcpy((uint8_t *)s_rx_buf + s_rx_len, data, len);
         s_rx_len += len;
     }
     // Only signal complete when the full frame has arrived.
@@ -139,7 +140,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
 
     // Parse response header
     uint16_t rcmd, rtid, rcrc, rlen;
-    if (!frame_parse_header(s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
+    if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
         Serial.println("[HS] V0: frame_parse_header failed");
         return false;
     }
@@ -157,7 +158,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
         return false;
     }
 
-    const uint8_t *payload = frame_payload(s_rx_buf, s_rx_len);
+    const uint8_t *payload = frame_payload((const uint8_t *)s_rx_buf, s_rx_len);
     if (!payload) {
         Serial.println("[HS] V0: frame_payload failed");
         return false;
@@ -277,7 +278,7 @@ static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16]
     }
 
     uint16_t rcmd, rtid, rcrc, rlen;
-    if (!frame_parse_header(s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
+    if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
         Serial.println("[HS] CommCmd: frame_parse_header failed");
         return false;
     }
@@ -295,8 +296,8 @@ static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16]
     }
     size_t resp_ct_len = (size_t)rlen - HM_HEADER_LEN;
     if (resp_ct_len == 0) { Serial.println("[HS] CommCmd: empty ct"); return false; }
-    const uint8_t *resp_ct = frame_payload(s_rx_buf, s_rx_len);
-    const uint8_t *resp_tag = s_rx_buf + rlen;
+    const uint8_t *resp_ct = frame_payload((const uint8_t *)s_rx_buf, s_rx_len);
+    const uint8_t *resp_tag = (const uint8_t *)s_rx_buf + rlen;
     if (crc16_modbus(resp_ct, resp_ct_len) != rcrc) {
         Serial.println("[HS] CommCmd: CRC mismatch.");
         return false;
