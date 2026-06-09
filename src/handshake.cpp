@@ -152,6 +152,10 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
         return false;
     }
     size_t payload_ct_len = rlen - HM_HEADER_LEN;
+    if ((size_t)rlen > s_rx_len || payload_ct_len == 0) {
+        Serial.println("[HS] V0: declared length exceeds received / empty.");
+        return false;
+    }
 
     const uint8_t *payload = frame_payload(s_rx_buf, s_rx_len);
     if (!payload) {
@@ -169,6 +173,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     v0_derive_iv(rcmd, rtid, sn, riv);
 
     uint8_t pt[RX_BUF_LEN];
+    if (payload_ct_len > sizeof(pt)) return false;
     size_t pt_len = v0_decrypt(payload, payload_ct_len, rkey, riv, pt);
     if (pt_len == 0) {
         Serial.println("[HS] V0: decrypt failed");
@@ -202,6 +207,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
 }
 
 static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16], int32_t action) {
+    uint16_t req_tid = *tid;
     // Encode CommandResDTO
     CommandResDTO cmd_msg = CommandResDTO_init_default;
     cmd_msg.has_dtu_sn = true;
@@ -270,21 +276,49 @@ static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16]
         return false;
     }
 
-    // Parse response header for CRC validation
     uint16_t rcmd, rtid, rcrc, rlen;
     if (!frame_parse_header(s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
         Serial.println("[HS] CommCmd: frame_parse_header failed");
         return false;
     }
-    if (rlen >= HM_HEADER_LEN) {
-        size_t payload_ct_len = rlen - HM_HEADER_LEN;
-        const uint8_t *resp_payload = frame_payload(s_rx_buf, s_rx_len);
-        if (resp_payload && crc16_modbus(resp_payload, payload_ct_len) != rcrc) {
-            Serial.println("[HS] CommCmd: CRC mismatch.");
-            return false;
-        }
+    if (rcmd != CMD_COMMCMD) {
+        Serial.printf("[HS] CommCmd: unexpected cmd 0x%04X\n", rcmd);
+        return false;
     }
-
+    if (rtid != req_tid) {
+        Serial.printf("[HS] CommCmd: tid mismatch (req=%u resp=%u)\n", req_tid, rtid);
+        return false;
+    }
+    if (rlen < HM_HEADER_LEN || (size_t)rlen + 16 > s_rx_len) {
+        Serial.println("[HS] CommCmd: bad frame length");
+        return false;
+    }
+    size_t resp_ct_len = (size_t)rlen - HM_HEADER_LEN;
+    if (resp_ct_len == 0) { Serial.println("[HS] CommCmd: empty ct"); return false; }
+    const uint8_t *resp_ct = frame_payload(s_rx_buf, s_rx_len);
+    const uint8_t *resp_tag = s_rx_buf + rlen;
+    if (crc16_modbus(resp_ct, resp_ct_len) != rcrc) {
+        Serial.println("[HS] CommCmd: CRC mismatch.");
+        return false;
+    }
+    uint8_t rkey[16], rnonce[12];
+    v1_derive_key(enc_rand, rkey);
+    v1_derive_nonce(CMD_COMMCMD, rtid, enc_rand, rnonce);
+    uint8_t raad[4] = {
+        (uint8_t)(CMD_COMMCMD & 0xFF), (uint8_t)((CMD_COMMCMD >> 8) & 0xFF),
+        (uint8_t)(rtid & 0xFF), (uint8_t)((rtid >> 8) & 0xFF)
+    };
+    uint8_t rpt[TX_BUF_LEN];
+    if (resp_ct_len > sizeof(rpt)) return false;
+    if (!v1_decrypt(resp_ct, resp_ct_len, rkey, rnonce, raad, sizeof(raad), resp_tag, rpt)) {
+        Serial.println("[HS] CommCmd: GCM auth failure.");
+        return false;
+    }
+    (void)rpt;  // decrypt output unused; GCM tag verification is the point
+    // The device's CommCmd reply decodes as CommandReqDTO, which carries no
+    // err_code in this proto (err_code lives on CommandResDTO, which we SEND).
+    // GCM auth + cmd/tid match already prove this is an authentic response to
+    // our exact request — far stronger than the old "any frame = success".
     return true;
 }
 

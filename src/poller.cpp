@@ -97,7 +97,7 @@ static bool send_real_req(uint16_t *tid, const uint8_t enc_rand[16], int cp) {
 // ---------------------------------------------------------------------------
 
 static bool decode_page(const uint8_t *buf, size_t buf_len,
-                        const uint8_t enc_rand[16],
+                        const uint8_t enc_rand[16], uint16_t expected_tid,
                         RealDataNewReqDTO *out) {
     uint16_t cmd, resp_tid, rcrc, rlen;
     if (!frame_parse_header(buf, buf_len, &cmd, &resp_tid, &rcrc, &rlen)) return false;
@@ -111,8 +111,19 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
         Serial.println("[PL] Bad frame length.");
         return false;
     }
+    if (cmd != CMD_REAL) {
+        Serial.printf("[PL] Unexpected cmd 0x%04X\n", cmd);
+        return false;
+    }
+    // The device is expected to echo our request tid. If a particular inverter
+    // uses independent response tids, relax this check — the log makes it obvious.
+    if (resp_tid != expected_tid) {
+        Serial.printf("[PL] tid mismatch (req=%u resp=%u)\n", expected_tid, resp_tid);
+        return false;
+    }
     const uint8_t *ct = frame_payload(buf, buf_len);
     size_t ct_len = (size_t)rlen - HM_HEADER_LEN;  // ciphertext only, no tag
+    if (ct_len == 0) return false;
     const uint8_t *tag = buf + rlen;
 
     // CRC validation (over ciphertext only, no tag)
@@ -131,6 +142,7 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
     aad[3] = (resp_tid >> 8) & 0xFF;
 
     uint8_t pt[2048];
+    if (ct_len > sizeof(pt)) return false;
     if (!v1_decrypt(ct, ct_len, key, nonce, aad, 4, tag, pt)) {
         Serial.println("[PL] GCM auth tag failure.");
         return false;
@@ -173,6 +185,7 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
     ble_set_rx_callback(rx_handler);
 
     // Send first page request (arm RX before the write to avoid a race)
+    uint16_t req_tid = *tid;
     rx_reset();
     if (!send_real_req(tid, enc_rand, 0)) {
         Serial.println("[PL] Send request failed.");
@@ -190,7 +203,7 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
     }
 
     RealDataNewReqDTO combined = RealDataNewReqDTO_init_zero;
-    if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, &combined)) {
+    if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, req_tid, &combined)) {
         return false;
     }
 
@@ -203,13 +216,14 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
         // A paged response is all-or-nothing: any failure mid-paging aborts the
         // whole poll so we never publish a partial merge (spec: discard partial).
         rx_reset();
+        uint16_t page_tid = *tid;
         if (!send_real_req(tid, enc_rand, cp)) return false;
         if (!wait_rx(RESPONSE_TIMEOUT_MS)) return false;
 
         if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &cmd, &resp_tid, &rcrc, &rlen)) return false;
 
         RealDataNewReqDTO page = RealDataNewReqDTO_init_zero;
-        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, &page)) return false;
+        if (!decode_page((const uint8_t *)s_rx_buf, s_rx_len, enc_rand, page_tid, &page)) return false;
 
         // Merge pv_data from this page
         for (pb_size_t i = 0; i < page.pv_data_count; i++) {
