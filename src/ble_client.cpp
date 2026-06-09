@@ -38,9 +38,8 @@ void ble_init(void) {
 }
 
 bool ble_connect(const char *name_prefix, const char *sn_filter,
-                 char *sn_out, size_t sn_out_len, BleRxCallback rx_cb) {
+                 char *sn_out, size_t sn_out_len) {
     if (sn_out == nullptr || sn_out_len == 0) return false;
-    s_rx_cb.store(rx_cb);
 
     // Clean up any pre-existing client before creating a new one
     if (s_client) {
@@ -129,7 +128,9 @@ bool ble_is_connected(void) {
 
 bool ble_write(const uint8_t *data, size_t len) {
     if (!ble_is_connected() || !s_tx) return false;
-    uint16_t mtu = s_client->getMTU() - 3;
+    uint16_t mtu = s_client->getMTU();
+    if (mtu < 23) mtu = 23;   // never underflow if MTU not yet negotiated
+    mtu -= 3;
     size_t offset = 0;
     while (offset < len) {
         size_t chunk = (len - offset > mtu) ? mtu : (len - offset);

@@ -48,7 +48,7 @@ uint16_t crc16_modbus(const uint8_t *data, size_t len) {
 void v0_derive_key(const char *sn, uint8_t key_out[16]) {
     static const uint8_t salt[] = "Hoymiles@#123456";
     size_t sn_len = strlen(sn);
-    if (sn_len > 48) return;  // Protects against stack overflow (SN must be <= 48 chars)
+    if (sn_len > 48) { memset(key_out, 0, 16); return; }  // Protects against stack overflow (SN must be <= 48 chars)
     uint8_t buf[64];
     memcpy(buf, sn, sn_len);
     memcpy(buf + sn_len, salt, 16);
@@ -59,7 +59,7 @@ void v0_derive_key(const char *sn, uint8_t key_out[16]) {
 
 void v0_derive_iv(uint16_t cmd, uint16_t tid, const char *sn, uint8_t iv_out[16]) {
     size_t sn_len = strlen(sn);
-    if (sn_len > 64) return;  // Protects against stack overflow
+    if (sn_len > 64) { memset(iv_out, 0, 16); return; }  // Protects against stack overflow
     uint8_t buf[4 + 64];
     buf[0] = (cmd >> 8) & 0xFF;
     buf[1] = cmd & 0xFF;
