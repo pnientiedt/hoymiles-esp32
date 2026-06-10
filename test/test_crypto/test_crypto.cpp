@@ -123,6 +123,43 @@ void test_v1_decrypt_bad_tag_fails(void) {
     TEST_ASSERT_FALSE(ok);
 }
 
+// Independent derivation cross-check: expected values computed with Python
+// hashlib (triple SHA-256), not from the C implementation.
+void test_v0_derive_iv_response(void) {
+    uint8_t iv[16];
+    v0_derive_iv(0xA301, 1, "AABBCCDDEE12", iv);
+    uint8_t expected[16];
+    hex_to_bytes("d51f11517e7f2a257ed44c108f63e658", expected, 16);
+    TEST_ASSERT_EQUAL_MEMORY(expected, iv, 16);
+}
+
+void test_v1_derive_nonce_commcmd(void) {
+    uint8_t enc_rand[16];
+    hex_to_bytes("000102030405060708090a0b0c0d0e0f", enc_rand, 16);
+    uint8_t nonce[12];
+    v1_derive_nonce(0xA305, 1, enc_rand, nonce);
+    uint8_t expected[12];
+    hex_to_bytes("1951417f184704089e48a2d6", expected, 12);
+    TEST_ASSERT_EQUAL_MEMORY(expected, nonce, 12);
+}
+
+void test_v0_decrypt_rejects_unaligned(void) {
+    uint8_t key[16] = {0}, iv[16] = {0}, ct[17] = {0}, pt[32];
+    TEST_ASSERT_EQUAL(0, v0_decrypt(ct, 17, key, iv, pt));  // not a multiple of 16
+}
+
+void test_v0_decrypt_rejects_bad_padding(void) {
+    uint8_t key[16], iv[16];
+    hex_to_bytes("4c3f5d3bbf452b9fe337146ae214b0ee", key, 16);
+    hex_to_bytes("31e25c9a5aaf687e3767a3551fd58395", iv, 16);
+    uint8_t pt_in[16] = "0123456789abcde";  // 15 chars + NUL = 16 bytes
+    uint8_t ct[32];
+    size_t cl = v0_encrypt(pt_in, 16, key, iv, ct);
+    ct[cl - 1] ^= 0xFF;  // corrupt last ciphertext byte -> bogus padding
+    uint8_t pt_out[32];
+    TEST_ASSERT_EQUAL(0, v0_decrypt(ct, cl, key, iv, pt_out));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_triple_sha256);
@@ -134,5 +171,9 @@ int main(void) {
     RUN_TEST(test_v1_derive_nonce);
     RUN_TEST(test_v1_encrypt_decrypt_roundtrip);
     RUN_TEST(test_v1_decrypt_bad_tag_fails);
+    RUN_TEST(test_v0_derive_iv_response);
+    RUN_TEST(test_v1_derive_nonce_commcmd);
+    RUN_TEST(test_v0_decrypt_rejects_unaligned);
+    RUN_TEST(test_v0_decrypt_rejects_bad_padding);
     return UNITY_END();
 }

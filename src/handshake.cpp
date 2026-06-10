@@ -11,6 +11,7 @@
 #include <pb_encode.h>
 #include <time.h>
 #include <string.h>
+#include <esp_task_wdt.h>
 
 #define CMD_APP_INFO_REQ  0xA201
 #define CMD_APP_INFO_RES  0xA301
@@ -22,13 +23,14 @@
 #define COMMCMD_LOGIN     64
 #define COMMCMD_TIME_SYNC 104
 
-static uint8_t  s_rx_buf[RX_BUF_LEN];
+static volatile uint8_t  s_rx_buf[RX_BUF_LEN];
 static volatile size_t   s_rx_len   = 0;
 static volatile bool     s_rx_ready = false;
 
 static void rx_handler(const uint8_t *data, size_t len) {
+    if (s_rx_ready) return;
     if (s_rx_len + len <= RX_BUF_LEN) {
-        memcpy(s_rx_buf + s_rx_len, data, len);
+        memcpy((uint8_t *)s_rx_buf + s_rx_len, data, len);
         s_rx_len += len;
     }
     // Only signal complete when the full frame has arrived.
@@ -56,6 +58,7 @@ static bool wait_for_rx(uint32_t timeout_ms) {
     uint32_t start = millis();
     while (!s_rx_ready) {
         if (millis() - start > timeout_ms) return false;
+        esp_task_wdt_reset();
         delay(10);
     }
     return true;
@@ -83,6 +86,9 @@ static void save_enc_rand_to_nvs(const uint8_t enc_rand[16]) {
 
 static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16]) {
     // Encode APPInfoDataResDTO
+    // NOTE: the DTU acts as the "server", so the ESP32 SENDS the library's
+    // ...ResDTO and DECODES the ...ReqDTO. This inversion is intentional and
+    // mirrors the hoymiles-wifi reference. Verify against a device capture.
     APPInfoDataResDTO req = APPInfoDataResDTO_init_default;
     req.has_timestamp = true;
     req.timestamp = (uint32_t)time(nullptr);
@@ -137,7 +143,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
 
     // Parse response header
     uint16_t rcmd, rtid, rcrc, rlen;
-    if (!frame_parse_header(s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
+    if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
         Serial.println("[HS] V0: frame_parse_header failed");
         return false;
     }
@@ -150,8 +156,12 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
         return false;
     }
     size_t payload_ct_len = rlen - HM_HEADER_LEN;
+    if ((size_t)rlen > s_rx_len || payload_ct_len == 0) {
+        Serial.println("[HS] V0: declared length exceeds received / empty.");
+        return false;
+    }
 
-    const uint8_t *payload = frame_payload(s_rx_buf, s_rx_len);
+    const uint8_t *payload = frame_payload((const uint8_t *)s_rx_buf, s_rx_len);
     if (!payload) {
         Serial.println("[HS] V0: frame_payload failed");
         return false;
@@ -167,6 +177,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     v0_derive_iv(rcmd, rtid, sn, riv);
 
     uint8_t pt[RX_BUF_LEN];
+    if (payload_ct_len > sizeof(pt)) return false;
     size_t pt_len = v0_decrypt(payload, payload_ct_len, rkey, riv, pt);
     if (pt_len == 0) {
         Serial.println("[HS] V0: decrypt failed");
@@ -200,6 +211,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
 }
 
 static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16], int32_t action) {
+    uint16_t req_tid = *tid;
     // Encode CommandResDTO
     CommandResDTO cmd_msg = CommandResDTO_init_default;
     cmd_msg.has_dtu_sn = true;
@@ -268,21 +280,49 @@ static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16]
         return false;
     }
 
-    // Parse response header for CRC validation
     uint16_t rcmd, rtid, rcrc, rlen;
-    if (!frame_parse_header(s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
+    if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
         Serial.println("[HS] CommCmd: frame_parse_header failed");
         return false;
     }
-    if (rlen >= HM_HEADER_LEN) {
-        size_t payload_ct_len = rlen - HM_HEADER_LEN;
-        const uint8_t *resp_payload = frame_payload(s_rx_buf, s_rx_len);
-        if (resp_payload && crc16_modbus(resp_payload, payload_ct_len) != rcrc) {
-            Serial.println("[HS] CommCmd: CRC mismatch.");
-            return false;
-        }
+    if (rcmd != CMD_COMMCMD) {
+        Serial.printf("[HS] CommCmd: unexpected cmd 0x%04X\n", rcmd);
+        return false;
     }
-
+    if (rtid != req_tid) {
+        Serial.printf("[HS] CommCmd: tid mismatch (req=%u resp=%u)\n", req_tid, rtid);
+        return false;
+    }
+    if (rlen < HM_HEADER_LEN || (size_t)rlen + 16 > s_rx_len) {
+        Serial.println("[HS] CommCmd: bad frame length");
+        return false;
+    }
+    size_t resp_ct_len = (size_t)rlen - HM_HEADER_LEN;
+    if (resp_ct_len == 0) { Serial.println("[HS] CommCmd: empty ct"); return false; }
+    const uint8_t *resp_ct = frame_payload((const uint8_t *)s_rx_buf, s_rx_len);
+    const uint8_t *resp_tag = (const uint8_t *)s_rx_buf + rlen;
+    if (crc16_modbus(resp_ct, resp_ct_len) != rcrc) {
+        Serial.println("[HS] CommCmd: CRC mismatch.");
+        return false;
+    }
+    uint8_t rkey[16], rnonce[12];
+    v1_derive_key(enc_rand, rkey);
+    v1_derive_nonce(CMD_COMMCMD, rtid, enc_rand, rnonce);
+    uint8_t raad[4] = {
+        (uint8_t)(CMD_COMMCMD & 0xFF), (uint8_t)((CMD_COMMCMD >> 8) & 0xFF),
+        (uint8_t)(rtid & 0xFF), (uint8_t)((rtid >> 8) & 0xFF)
+    };
+    uint8_t rpt[TX_BUF_LEN];
+    if (resp_ct_len > sizeof(rpt)) return false;
+    if (!v1_decrypt(resp_ct, resp_ct_len, rkey, rnonce, raad, sizeof(raad), resp_tag, rpt)) {
+        Serial.println("[HS] CommCmd: GCM auth failure.");
+        return false;
+    }
+    (void)rpt;  // decrypt output unused; GCM tag verification is the point
+    // The device's CommCmd reply decodes as CommandReqDTO, which carries no
+    // err_code in this proto (err_code lives on CommandResDTO, which we SEND).
+    // GCM auth + cmd/tid match already prove this is an authentic response to
+    // our exact request — far stronger than the old "any frame = success".
     return true;
 }
 

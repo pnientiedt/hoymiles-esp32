@@ -44,6 +44,11 @@ static bool wifi_connect(void) {
     }
     Serial.printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
     configTime(0, 0, "pool.ntp.org");
+    uint32_t ntp_start = millis();
+    while (time(nullptr) < 1700000000UL && millis() - ntp_start < 8000) {
+        esp_task_wdt_reset();
+        delay(200);
+    }
     return true;
 }
 
@@ -59,12 +64,11 @@ static bool mqtt_connect(void) {
     char ver_topic[96];
     snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", s_base_topic);
     s_mqtt.publish(ver_topic, FW_VERSION, true);
-    s_mqtt.publish(s_status_topic, "online", true);
     return true;
 }
 
 static bool ble_connect_and_handshake(void) {
-    if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn), nullptr)) return false;
+    if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn))) return false;
     Serial.printf("[main] Inverter SN: %s\n", s_sn);
     snprintf(s_base_topic, sizeof(s_base_topic), "%s%s/", MQTT_TOPIC_PREFIX, s_sn);
     snprintf(s_status_topic, sizeof(s_status_topic), "%sstatus", s_base_topic);
@@ -87,6 +91,7 @@ void setup(void) {
     esp_task_wdt_add(NULL);
 
     s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    // Authoritative MQTT buffer control (runtime); PubSubClient reallocates here.
     s_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
     ble_init();
 }
@@ -120,6 +125,7 @@ void loop(void) {
         ble_disconnect();
     } else {
         s_poll_failures = 0;
+        s_mqtt.publish(s_status_topic, "online", true);
     }
 
     s_mqtt.loop();
