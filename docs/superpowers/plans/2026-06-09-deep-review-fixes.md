@@ -166,20 +166,16 @@ Replace the current response-handling tail (the block that parses the header and
         Serial.println("[HS] CommCmd: GCM auth failure.");
         return false;
     }
-    CommandReqDTO cres = CommandReqDTO_init_default;
-    pb_istream_t cstream = pb_istream_from_buffer(rpt, resp_ct_len);
-    if (!pb_decode(&cstream, CommandReqDTO_fields, &cres)) {
-        Serial.println("[HS] CommCmd: pb_decode failed");
-        return false;
-    }
-    if (cres.has_err_code && cres.err_code != 0) {
-        Serial.printf("[HS] CommCmd action=%d rejected, err_code=%d\n",
-                      (int)action, (int)cres.err_code);
-        return false;
-    }
+    (void)rpt;  // decrypt output unused; GCM tag verification is the point
+    // The device's CommCmd reply decodes as CommandReqDTO, which carries no
+    // err_code in this proto (err_code lives on CommandResDTO, which the ESP
+    // SENDS). GCM auth + cmd/tid match already prove this is an authentic
+    // response to our exact request — a far stronger check than the old
+    // "any frame = success". A richer command-result field would require a
+    // device capture to confirm the response DTO, so it is deferred.
     return true;
 ```
-Note: `CommandReqDTO` has an `err_code` field per `proto/CommCmd.proto`; confirm the field name (`err_code`) in the generated `src/proto/CommCmd.pb.h` and adjust if the generator named it differently.
+Note (resolved during implementation): the original draft checked `CommandReqDTO.err_code`, but that field does not exist — only `CommandResDTO` has `err_code`. The validation therefore stops at GCM-authenticated cmd/tid match and does not decode the response body.
 
 - [ ] **Step 6: Build + test**
 esp32 SUCCESS; native 15 pass.
