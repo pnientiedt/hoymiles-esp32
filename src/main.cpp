@@ -100,19 +100,32 @@ void setup(void) {
     ble_init();
 }
 
+// delay() that keeps feeding the task watchdog. A bare delay() longer than
+// WDT_TIMEOUT_S trips a panic reset — notably the 60s BLE retry wait, which is
+// twice the watchdog window when the inverter is offline (e.g. at night).
+static void wdt_safe_delay(uint32_t ms) {
+    uint32_t start = millis();
+    while ((millis() - start) < ms) {
+        esp_task_wdt_reset();
+        uint32_t elapsed = millis() - start;
+        uint32_t remaining = (ms > elapsed) ? (ms - elapsed) : 0;
+        delay(remaining < WDT_FEED_SLICE_MS ? remaining : WDT_FEED_SLICE_MS);
+    }
+}
+
 void loop(void) {
     esp_task_wdt_reset();
 
-    if (!wifi_connect()) { delay(WIFI_RETRY_MS); return; }
+    if (!wifi_connect()) { wdt_safe_delay(WIFI_RETRY_MS); return; }
 
     if (!ble_is_connected() || !s_enc_rand_ready) {
         if (!ble_connect_and_handshake()) {
-            delay(BLE_RETRY_MS);
+            wdt_safe_delay(BLE_RETRY_MS);
             return;
         }
     }
 
-    if (!mqtt_connect()) { delay(MQTT_RETRY_MS); return; }
+    if (!mqtt_connect()) { wdt_safe_delay(MQTT_RETRY_MS); return; }
 
     if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand)) {
         s_poll_failures++;
