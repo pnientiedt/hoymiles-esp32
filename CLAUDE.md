@@ -101,7 +101,8 @@ edit the `proto/*.proto` / `proto/*.options` source and regenerate. The
 
 Split into two headers:
 - **`src/secrets.h`** — gitignored, per-deployment secrets (`WIFI_SSID`,
-  `WIFI_PASSWORD`, `MQTT_HOST`). Created by copying `src/secrets.example.h`.
+  `WIFI_PASSWORD`, `MQTT_HOST`, and optional `MQTT_USER`/`MQTT_PASSWORD` for
+  broker auth — empty = anonymous). Created by copying `src/secrets.example.h`.
   A fresh clone won't compile until this exists.
 - **`src/config.h`** — versioned, non-secret tunables (MQTT port/client-id, poll
   interval, retry/timeout windows). It `#include`s `secrets.h`.

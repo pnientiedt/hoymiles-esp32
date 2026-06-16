@@ -2,7 +2,7 @@
 
 // Per-deployment secrets live in secrets.h (gitignored). Copy secrets.example.h
 // to secrets.h and fill it in before building. It defines:
-//   WIFI_SSID, WIFI_PASSWORD, MQTT_HOST
+//   WIFI_SSID, WIFI_PASSWORD, MQTT_HOST, MQTT_USER, MQTT_PASSWORD
 // The inverter serial is auto-discovered at runtime from its RMI- advertisement.
 #include "secrets.h"
 

@@ -56,7 +56,11 @@ static bool mqtt_connect(void) {
     if (s_status_topic[0] == '\0') return false;
     if (s_mqtt.connected()) return true;
     Serial.printf("[MQTT] Connecting to %s:%d …\n", MQTT_HOST, MQTT_PORT);
-    if (!s_mqtt.connect(MQTT_CLIENT_ID, nullptr, nullptr, s_status_topic, 1, true, "offline")) {
+    // Empty credentials → connect anonymously (PubSubClient treats a non-null
+    // user as "send username", so a placeholder "" would break open brokers).
+    const char *mqtt_user = MQTT_USER[0] ? MQTT_USER : nullptr;
+    const char *mqtt_pass = MQTT_PASSWORD[0] ? MQTT_PASSWORD : nullptr;
+    if (!s_mqtt.connect(MQTT_CLIENT_ID, mqtt_user, mqtt_pass, s_status_topic, 1, true, "offline")) {
         Serial.printf("[MQTT] Failed, rc=%d\n", s_mqtt.state());
         return false;
     }

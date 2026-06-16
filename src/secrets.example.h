@@ -10,5 +10,9 @@
 
 #define MQTT_HOST       "192.168.1.50"
 
+// MQTT broker credentials. Leave both empty ("") to connect anonymously.
+#define MQTT_USER       ""
+#define MQTT_PASSWORD   ""
+
 // The inverter's serial is auto-discovered from its "RMI-" BLE advertisement —
 // no device serial needs to be configured here.
