@@ -22,10 +22,13 @@
 
 // CommCmd application-layer handshake (V1) identity. The DTU whitelists a
 // client by its bleId; an unknown bleId requires the user's BLE PIN once to be
-// added to the whitelist. Generated with hiflow_ble.generate_ble_id(). PIN
-// empty = device has no PIN configured (or bleId already whitelisted).
+// added to the whitelist. Generated with hiflow_ble.generate_ble_id().
 #define BLE_ID   "100000000000000001"
+
+// BLE_PIN comes from secrets.h. Fallback to empty (no PIN) if not defined there.
+#ifndef BLE_PIN
 #define BLE_PIN  ""
+#endif
 
 #define POLL_INTERVAL_MS    30000
 #define WIFI_RETRY_MS       10000
