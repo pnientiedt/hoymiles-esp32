@@ -5,3 +5,6 @@ src/secrets.h
 
 # Local agent worktree/tooling directory
 .claude/
+
+# Serial-capture logs, one timestamped file per run
+logs/
