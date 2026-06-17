@@ -28,7 +28,7 @@ typedef struct _APPDtuInfoMO {
     APPDtuInfoMO_enc_rand_t enc_rand;
 } APPDtuInfoMO;
 
-typedef PB_BYTES_ARRAY_T(6) APPInfoDataResDTO_time_ymd_hms_t;
+typedef PB_BYTES_ARRAY_T(32) APPInfoDataResDTO_time_ymd_hms_t;
 typedef struct _APPInfoDataResDTO {
     bool has_time_ymd_hms;
     APPInfoDataResDTO_time_ymd_hms_t time_ymd_hms;

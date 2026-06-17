@@ -13,8 +13,11 @@
 #include <string.h>
 #include <esp_task_wdt.h>
 
-#define CMD_APP_INFO_REQ  0xA201
-#define CMD_APP_INFO_RES  0xA301
+// App->DTU commands start 0xA3; the DTU's replies start 0xA2 (per the
+// hoymiles-wifi const.py: "App -> DTU start with 0xa3, responses start 0xa2").
+// For app-info pairing the app SENDS 0xA301 and the DTU REPLIES with 0xA201.
+#define CMD_APP_INFO_SEND   0xA301   // CMD_APP_INFO_DATA_RES_DTO (app -> DTU)
+#define CMD_APP_INFO_REPLY  0xA201   // CMD_APP_INFO_DATA_REQ_DTO (DTU -> app)
 #define CMD_COMMCMD       0xA305
 #define NVS_NS            "hoymiles"
 #define NVS_KEY_ENCRAND   "enc_rand"
@@ -97,8 +100,17 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     // ...ResDTO and DECODES the ...ReqDTO. This inversion is intentional and
     // mirrors the hoymiles-wifi reference. Verify against a device capture.
     APPInfoDataResDTO req = APPInfoDataResDTO_init_default;
+    // The reference (hiflow-ble) sets three fields: time_ymd_hms, offset, time.
+    // Omitting time_ymd_hms left the DTU silent, so set all three.
+    time_t now = time(nullptr);
+    struct tm tmv;
+    gmtime_r(&now, &tmv);
+    req.has_time_ymd_hms = true;
+    req.time_ymd_hms.size = strftime((char *)req.time_ymd_hms.bytes,
+                                     sizeof(req.time_ymd_hms.bytes),
+                                     "%Y-%m-%d %H:%M:%S", &tmv);
     req.has_timestamp = true;
-    req.timestamp = (uint32_t)time(nullptr);
+    req.timestamp = (uint32_t)now;
     req.has_offset = true;
     req.offset = 28800;
 
@@ -113,7 +125,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     // Derive V0 key and IV
     uint8_t key[16], iv[16];
     v0_derive_key(sn, key);
-    v0_derive_iv(CMD_APP_INFO_REQ, *tid, sn, iv);
+    v0_derive_iv(CMD_APP_INFO_SEND, *tid, sn, iv);
 
     // V0 encrypt (PKCS7 padding adds up to 16 bytes)
     uint8_t ct[TX_BUF_LEN + 16];
@@ -126,7 +138,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     // Build frame (no tag for V0)
     uint8_t frame[TX_BUF_LEN + 64];
     size_t frame_len = frame_build(frame, sizeof(frame),
-                                   CMD_APP_INFO_REQ, *tid, ct, ct_len, NULL);
+                                   CMD_APP_INFO_SEND, *tid, ct, ct_len, NULL);
     if (frame_len == 0) {
         Serial.println("[HS] V0: frame_build failed");
         return false;
@@ -152,13 +164,15 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
         return false;
     }
 
+    hexdump("V0 RX frame", (const uint8_t *)s_rx_buf, s_rx_len < 48 ? s_rx_len : 48);
+
     // Parse response header
     uint16_t rcmd, rtid, rcrc, rlen;
     if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
         Serial.println("[HS] V0: frame_parse_header failed");
         return false;
     }
-    if (rcmd != CMD_APP_INFO_RES) {
+    if (rcmd != CMD_APP_INFO_REPLY) {
         Serial.printf("[HS] V0: unexpected cmd 0x%04X\n", rcmd);
         return false;
     }

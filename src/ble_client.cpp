@@ -18,8 +18,13 @@ static bool s_connected = false;
 
 static void notify_cb(NimBLERemoteCharacteristic *chr,
                       uint8_t *data, size_t len, bool is_notify) {
+    // Accept BOTH notifications and indications: bleak's start_notify (the
+    // hiflow-ble reference) handles either, and dropping indications here would
+    // silently lose the DTU's reply if it indicates instead of notifies.
+    Serial.printf("[BLE] RX %s len=%u\n", is_notify ? "notify" : "indicate",
+                  (unsigned)len);
     auto cb = s_rx_cb.load();
-    if (cb && is_notify) cb(data, len);
+    if (cb) cb(data, len);
 }
 
 class ClientCallbacks : public NimBLEClientCallbacks {
@@ -109,7 +114,16 @@ bool ble_connect(const char *name_prefix, const char *sn_filter,
         return false;
     }
 
-    if (!s_rx->subscribe(true, notify_cb)) {
+    // Diagnostics + adaptive subscribe. subscribe(true)=notifications,
+    // subscribe(false)=indications. Pick based on what RX actually supports.
+    bool can_notify   = s_rx->canNotify();
+    bool can_indicate = s_rx->canIndicate();
+    Serial.printf("[BLE] MTU=%u | TX props: write=%d writeNR=%d | RX props: notify=%d indicate=%d\n",
+                  (unsigned)s_client->getMTU(),
+                  s_tx->canWrite(), s_tx->canWriteNoResponse(),
+                  can_notify, can_indicate);
+    bool want_notifications = can_notify;   // prefer notify; else indications
+    if (!s_rx->subscribe(want_notifications, notify_cb)) {
         Serial.println("[BLE] Subscribe failed.");
         s_client->disconnect();
         NimBLEDevice::deleteClient(s_client);
@@ -134,7 +148,10 @@ bool ble_write(const uint8_t *data, size_t len) {
     size_t offset = 0;
     while (offset < len) {
         size_t chunk = (len - offset > mtu) ? mtu : (len - offset);
-        if (!s_tx->writeValue(data + offset, chunk, false)) {
+        // Write WITH response: the inverter's TX characteristic expects
+        // acknowledged writes (the hiflow-ble reference uses response=True).
+        // Unacknowledged writes are silently dropped and the DTU never replies.
+        if (!s_tx->writeValue(data + offset, chunk, true)) {
             Serial.println("[BLE] Write failed mid-chunk.");
             return false;
         }
