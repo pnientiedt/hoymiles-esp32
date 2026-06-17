@@ -14,5 +14,9 @@
 #define MQTT_USER       ""
 #define MQTT_PASSWORD   ""
 
+// DTU BLE PIN from the S-Miles app, used once to whitelist this client's bleId.
+// Leave empty ("") if the device has no PIN configured.
+#define BLE_PIN         ""
+
 // The inverter's serial is auto-discovered from its "RMI-" BLE advertisement —
 // no device serial needs to be configured here.

@@ -36,6 +36,11 @@ static volatile uint8_t  s_rx_buf[RX_BUF_LEN];
 static volatile size_t   s_rx_len   = 0;
 static volatile bool     s_rx_ready = false;
 
+// Once the DTU rejects a PIN (sts=1) we must NOT keep re-submitting it: repeated
+// wrong PINs lock the device (observed: ~11-minute lockout). Latch this for the
+// rest of the boot so the main reconnect loop can't hammer the DTU.
+static bool s_pin_rejected = false;
+
 // Diagnostic: print up to `n` bytes of `buf` as hex with a label.
 static void hexdump(const char *label, const uint8_t *buf, size_t n) {
     Serial.printf("[HS] %s (%u bytes):", label, (unsigned)n);
@@ -409,9 +414,12 @@ static bool do_commcmd_handshake(uint16_t *tid, const uint8_t enc_rand[16],
     if (login_sts == 3) {
         if (!pin || pin[0] == '\0') {
             Serial.println("[HS] CommCmd: device wants a PIN (sts=3) but BLE_PIN is empty. "
-                           "Set BLE_PIN in config.h to the S-Miles app PIN.");
+                           "Set BLE_PIN in secrets.h to the S-Miles app PIN.");
+        } else if (s_pin_rejected) {
+            Serial.println("[HS] CommCmd: PIN already rejected this boot — NOT retrying "
+                           "(repeated wrong PINs lock the DTU). Fix BLE_PIN and reboot.");
         } else {
-            Serial.println("[HS] CommCmd: sts=3 -> sending PIN (action=82)");
+            Serial.println("[HS] CommCmd: sts=3 -> sending PIN once (action=82)");
             n = build_commcmd_res(pb, COMMCMD_PIN, pin);
             if (commcmd_request(tid, enc_rand, CMD_COMMCMD_SEND, pb, n, pt, sizeof(pt)) != 0) {
                 for (int i = 0; i < 8; i++) {
@@ -420,8 +428,13 @@ static bool do_commcmd_handshake(uint16_t *tid, const uint8_t enc_rand[16],
                     if (rn == 0) break;
                     sts = 1; pb_get_varint_field(pt, rn, 11, &sts);
                     Serial.printf("[HS] PIN poll: sts=%u\n", sts);
+                    hexdump("PIN status response (decrypted)", pt, rn);
                     if (sts == 0) { login_sts = 1; break; }       // success
-                    if (sts == 1) { Serial.println("[HS] CommCmd: WRONG PIN"); break; }
+                    if (sts == 1) {                                // wrong PIN
+                        Serial.println("[HS] CommCmd: WRONG PIN — latching, will not retry");
+                        s_pin_rejected = true;
+                        break;
+                    }
                     delay(1000); esp_task_wdt_reset();
                 }
             }
