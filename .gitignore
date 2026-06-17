@@ -8,3 +8,6 @@ src/secrets.h
 
 # Serial-capture logs, one timestamped file per run
 logs/
+
+# BLE reference-library test harness: keep the scripts, ignore the local venv
+ble-test/.venv/

@@ -1,0 +1,6 @@
+# Host-side BLE reference harness deps. Not part of the firmware build.
+bleak==3.0.2
+cryptography==49.0.0
+protobuf==7.35.1
+# The known-working Hoymiles/HiFlow BLE reference library (not on PyPI).
+hiflow-ble @ git+https://github.com/TheTiEr/hiflow-ble.git@f3afa2d96aa3d70345debe543fe8577d7c9c92dd
