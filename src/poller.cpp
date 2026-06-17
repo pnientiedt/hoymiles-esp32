@@ -159,7 +159,7 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
 
     pb_istream_t istream = pb_istream_from_buffer(pt, ct_len);
     if (!pb_decode(&istream, RealDataNewReqDTO_fields, out)) {
-        Serial.println("[PL] Proto decode failed.");
+        Serial.printf("[PL] Proto decode failed: %s\n", PB_GET_ERROR(&istream));
         return false;
     }
     return true;
@@ -262,6 +262,7 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
 
     // Publish per-panel DC
     float total_energy_kWh = 0.0f;
+    float today_energy_kWh = 0.0f;
     for (pb_size_t i = 0; i < combined.pv_data_count; i++) {
         PvMO &pv = combined.pv_data[i];
         char base[32], subtopic[64];
@@ -274,10 +275,12 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
         snprintf(subtopic, sizeof(subtopic), "%senergy_total", base); publish_float(mqtt, subtopic, pv.energy_total / 1000.0f);
 
         total_energy_kWh += pv.energy_total / 1000.0f;
+        today_energy_kWh += pv.energy_daily / 1000.0f;
     }
 
-    // Top-level topics
-    publish_float(mqtt, "energy_today", combined.dtu_daily_energy / 1000.0f);
+    // Top-level totals. The DTU's own daily-energy field (13) is a submessage
+    // this firmware doesn't model, so we sum the per-panel values instead.
+    publish_float(mqtt, "energy_today", today_energy_kWh);
     publish_float(mqtt, "energy_total", total_energy_kWh);
 
     time_t now = time(nullptr);

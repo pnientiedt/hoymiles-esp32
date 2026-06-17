@@ -43,6 +43,9 @@ message RealDataNewReqDTO {
     optional int32  firmware_version     = 5;
     optional SGSMO  sgs_data             = 9;
     repeated PvMO   pv_data              = 11;
-    optional uint64 dtu_power            = 12;
-    optional uint64 dtu_daily_energy     = 13;
+    // Fields 12/13 intentionally omitted: this DTU firmware sends field 13 as a
+    // length-delimited submessage, not the uint64 the upstream proto assumes.
+    // nanopb fails hard on the wire-type mismatch (Python protobuf silently
+    // drops it), so we leave them out and let nanopb skip them as unknown
+    // fields. Daily energy is derived from per-panel pv_data instead.
 }
