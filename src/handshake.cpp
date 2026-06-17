@@ -27,6 +27,13 @@ static volatile uint8_t  s_rx_buf[RX_BUF_LEN];
 static volatile size_t   s_rx_len   = 0;
 static volatile bool     s_rx_ready = false;
 
+// Diagnostic: print up to `n` bytes of `buf` as hex with a label.
+static void hexdump(const char *label, const uint8_t *buf, size_t n) {
+    Serial.printf("[HS] %s (%u bytes):", label, (unsigned)n);
+    for (size_t i = 0; i < n; i++) Serial.printf(" %02X", buf[i]);
+    Serial.println();
+}
+
 static void rx_handler(const uint8_t *data, size_t len) {
     if (s_rx_ready) return;
     if (s_rx_len + len <= RX_BUF_LEN) {
@@ -130,6 +137,7 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     ble_set_rx_callback(rx_handler);
     rx_reset();
 
+    hexdump("V0 TX frame", frame, frame_len < 48 ? frame_len : 48);
     if (!ble_write(frame, frame_len)) {
         Serial.println("[HS] V0: ble_write failed");
         return false;
@@ -137,7 +145,10 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
 
     // Wait for response
     if (!wait_for_rx(RESPONSE_TIMEOUT_MS)) {
-        Serial.println("[HS] V0: timeout waiting for response");
+        Serial.printf("[HS] V0: timeout waiting for response (rx_len=%u)\n",
+                      (unsigned)s_rx_len);
+        if (s_rx_len > 0) hexdump("V0 partial RX", (const uint8_t *)s_rx_buf,
+                                  s_rx_len < 48 ? s_rx_len : 48);
         return false;
     }
 

@@ -37,6 +37,16 @@ def autodetect_port():
     return None
 
 
+def sanitize(text):
+    """Keep printable ASCII + tab/newline; drop the rest.
+
+    The reset pulse makes the ESP32 boot ROM emit bytes at a different baud,
+    which decode as binary garbage at 115200 and make the log unreadable. This
+    strips those so each log file is clean text.
+    """
+    return "".join(c for c in text if c in "\t\n" or " " <= c <= "~")
+
+
 def main():
     args = [a for a in sys.argv[1:] if a != "--no-reset"]
     do_reset = "--no-reset" not in sys.argv
@@ -72,7 +82,9 @@ def main():
         while time.time() < end:
             line = ser.readline()
             if line:
-                text = line.decode("utf-8", "replace")
+                text = sanitize(line.decode("utf-8", "replace"))
+                if text.strip("\n") == "":
+                    continue  # skip lines that were pure boot-ROM garbage
                 sys.stdout.write(text)
                 sys.stdout.flush()
                 f.write(text)
