@@ -20,12 +20,20 @@
 // MQTT topics are <prefix><discovered-serial>/...  built at runtime.
 #define MQTT_TOPIC_PREFIX "hoymiles/"
 
-// CommCmd application-layer handshake (V1) identity. The DTU whitelists a
-// client by its bleId; an unknown bleId requires the user's BLE PIN once to be
-// added to the whitelist. Generated with hiflow_ble.generate_ble_id().
+// CommCmd application-layer handshake (V1) identity. The DTU whitelists a client
+// by this bleId; an unknown bleId must be authorised once with the device's BLE
+// PIN (see BLE_PIN). Both are per-deployment and belong in secrets.h; the
+// fallbacks below let the firmware build out of the box.
+//
+//   - BLE_ID:  any stable, unique-ish decimal string. The placeholder works for
+//              a single device (you'll just authorise it once with the PIN).
+//              Override in secrets.h to pin a specific identity.
+//   - BLE_PIN: the S-Miles-app BLE PIN; empty = device has no PIN, or the bleId
+//              is already whitelisted. Submitted at most once (never on repeat,
+//              which would lock the DTU).
+#ifndef BLE_ID
 #define BLE_ID   "100000000000000001"
-
-// BLE_PIN comes from secrets.h. Fallback to empty (no PIN) if not defined there.
+#endif
 #ifndef BLE_PIN
 #define BLE_PIN  ""
 #endif

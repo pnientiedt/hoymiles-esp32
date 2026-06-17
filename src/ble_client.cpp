@@ -152,11 +152,7 @@ bool ble_write(const uint8_t *data, size_t len) {
     if (!ble_is_connected() || !s_tx) return false;
     uint16_t mtu = s_client->getMTU();
     if (mtu < 23) mtu = 23;   // never underflow if MTU not yet negotiated
-    mtu -= 3;
-    size_t nchunks = (len + mtu - 1) / mtu;
-    Serial.printf("[BLE] TX len=%u mtu_payload=%u -> %u chunk(s)%s\n",
-                  (unsigned)len, (unsigned)mtu, (unsigned)nchunks,
-                  nchunks > 1 ? " (FRAGMENTED!)" : "");
+    mtu -= 3;                 // ATT write payload = MTU - 3 (opcode + handle)
     size_t offset = 0;
     while (offset < len) {
         size_t chunk = (len - offset > mtu) ? mtu : (len - offset);

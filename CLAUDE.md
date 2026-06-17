@@ -26,8 +26,11 @@ python3 -m platformio run -e esp32
 python3 -m platformio run -e esp32 -t upload
 python3 -m platformio device monitor -b 115200
 
-# Regenerate nanopb C from proto/ (after editing a .proto / .options file)
-nanopb_generator proto/<Name>.proto -D src/proto
+# Regenerate nanopb C from proto/ (after editing a .proto / .options file).
+# nanopb_generator isn't on PATH — use the copy vendored by the Nanopb lib
+# (present after a build), and pass -I proto so imports resolve.
+python3 .pio/libdeps/esp32/Nanopb/generator/nanopb_generator.py \
+    proto/<Name>.proto -D src/proto -I proto
 ```
 
 **Native build is macOS/Homebrew-specific.** `platformio.ini`'s `[env:native]`
@@ -62,8 +65,13 @@ inverts: orchestration (`handshake`, `poller`, `main`) depends on primitives
   notify callback runs on the **NimBLE task (core 0)** while the rest runs on the
   main loop (core 1) — cross-core handoff uses an `std::atomic` callback pointer
   plus `volatile` RX-accumulation state.
-- **`handshake`** — obtains `encRand` (V0 pairing or NVS load), then CommCmd
-  login + time-sync. Persists `encRand` to NVS (`Preferences`).
+- **`handshake`** — obtains `encRand` (V0 pairing or NVS load), then runs the V1
+  CommCmd handshake: login (`action=64`, `data=BLE_ID`) → poll status → if the
+  DTU asks for a PIN (`sts=3`), submit `BLE_PIN` once (`action=82`) → time-sync
+  (`action=104`). CommCmd send cmd is `0xA318`, status `0xA319`; the DTU replies
+  on `sent_cmd - 0x0100`. The CommCmd messages are hand-rolled protobuf (the
+  upstream `.proto` had the wrong field numbers). Persists `encRand` to NVS
+  (`Preferences`).
 - **`poller`** — RealDataNew request → reassemble paged BLE notifications →
   nanopb decode → scale → MQTT publish. Paged responses are all-or-nothing.
 - **`main`** — `setup`/`loop` state machine: WiFi → BLE+handshake → MQTT → poll,
@@ -83,6 +91,18 @@ inverts: orchestration (`handshake`, `poller`, `main`) depends on primitives
 - **Ciphertext length comes from the frame's `length` field**, not the number of
   bytes accumulated off BLE (trailing notification bytes would otherwise shift
   the tag pointer).
+- **The DTU replies on `sent_cmd - 0x0100`** (e.g. `0xA301`→`0xA201`,
+  `0xA311`→`0xA211`) and keys its reply's GCM nonce/AAD on that *reply* cmd —
+  derive response crypto from the parsed reply cmd, not the request cmd.
+- **Notifications must be armed with an acknowledged CCCD write.** NimBLE's
+  `subscribe()` writes the CCCD without response by default; this DTU then never
+  enables notifications and stays silent even though data writes are ATT-ACK'd.
+  Pass `response=true` (see `ble_client.cpp`). This was the single hardest bug.
+- **nanopb is strict about wire types on known fields** (it only skips *unknown*
+  field numbers). When the DTU sends a field with a type the `.proto` doesn't
+  expect (e.g. `RealDataNewReqDTO` field 13 is a submessage, not `uint64`),
+  decode fails with "wrong wire type" — drop or retype that field and regenerate.
+  Full-fat protobuf (the Python reference) silently tolerates the same mismatch.
 
 ### Watchdog constraint
 
@@ -101,11 +121,13 @@ edit the `proto/*.proto` / `proto/*.options` source and regenerate. The
 
 Split into two headers:
 - **`src/secrets.h`** — gitignored, per-deployment secrets (`WIFI_SSID`,
-  `WIFI_PASSWORD`, `MQTT_HOST`, and optional `MQTT_USER`/`MQTT_PASSWORD` for
-  broker auth — empty = anonymous). Created by copying `src/secrets.example.h`.
-  A fresh clone won't compile until this exists.
+  `WIFI_PASSWORD`, `MQTT_HOST`, optional `MQTT_USER`/`MQTT_PASSWORD` for broker
+  auth — empty = anonymous, and optional `BLE_PIN`/`BLE_ID` for the CommCmd
+  whitelist). Created by copying `src/secrets.example.h`. A fresh clone won't
+  compile until this exists.
 - **`src/config.h`** — versioned, non-secret tunables (MQTT port/client-id, poll
-  interval, retry/timeout windows). It `#include`s `secrets.h`.
+  interval, retry/timeout windows, and `BLE_ID`/`BLE_PIN` fallbacks used when
+  `secrets.h` doesn't set them). It `#include`s `secrets.h`.
 
 The inverter serial and MQTT topic prefix are **derived at runtime**: the firmware
 scans for a BLE advertisement whose name starts with `BLE_NAME_PREFIX` (`"RMI-"`),

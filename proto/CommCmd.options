@@ -1,3 +1,0 @@
-CommandResDTO.dtu_sn   max_size:32
-CommandReqDTO.data     max_size:64
-CommandReqDTO.es_to_sn max_size:32

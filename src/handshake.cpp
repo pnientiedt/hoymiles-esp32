@@ -4,7 +4,6 @@
 #include "frame.h"
 #include "ble_client.h"
 #include "proto/APPInfomationData.pb.h"
-#include "proto/CommCmd.pb.h"
 #include <Preferences.h>
 #include <Arduino.h>
 #include <pb_decode.h>
@@ -108,10 +107,9 @@ static void save_enc_rand_to_nvs(const uint8_t enc_rand[16]) {
 }
 
 static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16]) {
-    // Encode APPInfoDataResDTO
-    // NOTE: the DTU acts as the "server", so the ESP32 SENDS the library's
-    // ...ResDTO and DECODES the ...ReqDTO. This inversion is intentional and
-    // mirrors the hoymiles-wifi reference. Verify against a device capture.
+    // Encode APPInfoDataResDTO. The DTU acts as the "server": the ESP32 SENDS the
+    // library's ...ResDTO and DECODES the ...ReqDTO. Confirmed against the real
+    // device (the reply decrypts and yields a valid encRand).
     APPInfoDataResDTO req = APPInfoDataResDTO_init_default;
     // The reference (hiflow-ble) sets three fields: time_ymd_hms, offset, time.
     // Omitting time_ymd_hms left the DTU silent, so set all three.

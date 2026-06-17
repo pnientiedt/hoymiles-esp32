@@ -11,3 +11,7 @@ logs/
 
 # BLE reference-library test harness: keep the scripts, ignore the local venv
 ble-test/.venv/
+
+# OS / editor cruft
+.DS_Store
+*.swp
