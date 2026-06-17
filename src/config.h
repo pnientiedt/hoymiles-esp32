@@ -20,6 +20,13 @@
 // MQTT topics are <prefix><discovered-serial>/...  built at runtime.
 #define MQTT_TOPIC_PREFIX "hoymiles/"
 
+// CommCmd application-layer handshake (V1) identity. The DTU whitelists a
+// client by its bleId; an unknown bleId requires the user's BLE PIN once to be
+// added to the whitelist. Generated with hiflow_ble.generate_ble_id(). PIN
+// empty = device has no PIN configured (or bleId already whitelisted).
+#define BLE_ID   "100000000000000001"
+#define BLE_PIN  ""
+
 #define POLL_INTERVAL_MS    30000
 #define WIFI_RETRY_MS       10000
 #define MQTT_RETRY_MS       10000

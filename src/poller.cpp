@@ -12,7 +12,8 @@
 #include <time.h>
 #include <esp_task_wdt.h>
 
-#define CMD_REAL  0xA311
+#define CMD_REAL        0xA311   // app -> DTU (we send)
+#define CMD_REAL_REPLY  0xA211   // DTU -> app (reply = sent - 0x0100, as in V0)
 
 // ---------------------------------------------------------------------------
 // RX state
@@ -115,7 +116,7 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
         Serial.println("[PL] Bad frame length.");
         return false;
     }
-    if (cmd != CMD_REAL) {
+    if (cmd != CMD_REAL_REPLY && cmd != CMD_REAL) {
         Serial.printf("[PL] Unexpected cmd 0x%04X\n", cmd);
         return false;
     }
@@ -136,12 +137,16 @@ static bool decode_page(const uint8_t *buf, size_t buf_len,
         return false;
     }
 
+    // Derive the V1 key/nonce/AAD from the RESPONSE cmd (cmd), not the request
+    // cmd: the DTU encrypts its reply keyed on the cmd it sends (0xA211), just
+    // as the V0 path decrypts with the 0xA201 reply cmd. Using 0xA311 here would
+    // fail the GCM tag.
     uint8_t key[16], nonce[12];
     v1_derive_key(enc_rand, key);
-    v1_derive_nonce(CMD_REAL, resp_tid, enc_rand, nonce);
+    v1_derive_nonce(cmd, resp_tid, enc_rand, nonce);
     uint8_t aad[4];
-    aad[0] = CMD_REAL & 0xFF;
-    aad[1] = (CMD_REAL >> 8) & 0xFF;
+    aad[0] = cmd & 0xFF;
+    aad[1] = (cmd >> 8) & 0xFF;
     aad[2] = resp_tid & 0xFF;
     aad[3] = (resp_tid >> 8) & 0xFF;
 

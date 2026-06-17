@@ -18,12 +18,18 @@
 // For app-info pairing the app SENDS 0xA301 and the DTU REPLIES with 0xA201.
 #define CMD_APP_INFO_SEND   0xA301   // CMD_APP_INFO_DATA_RES_DTO (app -> DTU)
 #define CMD_APP_INFO_REPLY  0xA201   // CMD_APP_INFO_DATA_REQ_DTO (DTU -> app)
-#define CMD_COMMCMD       0xA305
+// CommCmd application-layer handshake (V1, encRand-keyed). The DTU replies on
+// (sent_cmd - 0x0100), e.g. 0xA318 -> 0xA218, just like 0xA301 -> 0xA201.
+#define CMD_COMMCMD_SEND   0xA318   // CommCmdResDTO        (app -> DTU)
+#define CMD_COMMCMD_REPLY  0xA218   // CommCmdReqDTO        (DTU -> app)
+#define CMD_COMMSTS_SEND   0xA319   // CommCmdStatusResDTO  (app -> DTU)
+#define CMD_COMMSTS_REPLY  0xA219   // CommCmdStatusReqDTO  (DTU -> app)
 #define NVS_NS            "hoymiles"
 #define NVS_KEY_ENCRAND   "enc_rand"
 #define RX_BUF_LEN        1024
 #define TX_BUF_LEN        512
 #define COMMCMD_LOGIN     64
+#define COMMCMD_PIN       82
 #define COMMCMD_TIME_SYNC 104
 
 static volatile uint8_t  s_rx_buf[RX_BUF_LEN];
@@ -48,8 +54,10 @@ static void rx_handler(const uint8_t *data, size_t len) {
     if (s_rx_len >= HM_HEADER_LEN) {
         uint16_t wire_len = ((uint16_t)s_rx_buf[8] << 8) | s_rx_buf[9];
         uint16_t cmd      = ((uint16_t)s_rx_buf[2] << 8) | s_rx_buf[3];
-        // V1 frames (CommCmd=0xA305, RealDataNew=0xA311) append a 16-byte GCM tag
-        size_t tag_len = (cmd == 0xA305 || cmd == 0xA311) ? 16 : 0;
+        // Only the V0 pairing reply (0xA201) is plaintext-CBC with no tag; every
+        // V1 reply (CommCmd 0xA218/0xA219, RealData 0xA211, ...) appends a
+        // 16-byte GCM tag.
+        size_t tag_len = (cmd == CMD_APP_INFO_REPLY) ? 0 : 16;
         size_t expected = (size_t)wire_len + tag_len;
         if (s_rx_len >= expected) {
             s_rx_ready = true;
@@ -235,119 +243,206 @@ static bool do_v0_pairing(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16
     return true;
 }
 
-static bool do_commcmd(const char *sn, uint16_t *tid, const uint8_t enc_rand[16], int32_t action) {
-    uint16_t req_tid = *tid;
-    // Encode CommandResDTO
-    CommandResDTO cmd_msg = CommandResDTO_init_default;
-    cmd_msg.has_dtu_sn = true;
-    strncpy(cmd_msg.dtu_sn, sn, sizeof(cmd_msg.dtu_sn) - 1);
-    cmd_msg.dtu_sn[sizeof(cmd_msg.dtu_sn) - 1] = '\0';
-    cmd_msg.has_time = true;
-    cmd_msg.time = (int32_t)time(nullptr);
-    cmd_msg.has_action = true;
-    cmd_msg.action = action;
-    cmd_msg.has_tid = true;
-    cmd_msg.tid = (int64_t)(*tid);
+// ---- Minimal protobuf encoders (match the hiflow-ble reference exactly) ----
+// The BLE CommCmd message types aren't covered by our compiled nanopb structs
+// (and the committed CommCmd.proto has the wrong field numbers), so we hand-roll
+// the few fields we need — identical to the Python reference's _build_* helpers.
 
-    uint8_t pb_buf[TX_BUF_LEN];
-    pb_ostream_t ostream = pb_ostream_from_buffer(pb_buf, sizeof(pb_buf));
-    if (!pb_encode(&ostream, CommandResDTO_fields, &cmd_msg)) {
-        Serial.println("[HS] CommCmd: pb_encode failed");
-        return false;
+static size_t pb_varint(uint8_t *out, uint32_t n) {
+    size_t i = 0;
+    while (n > 0x7F) { out[i++] = (uint8_t)((n & 0x7F) | 0x80); n >>= 7; }
+    out[i++] = (uint8_t)(n & 0x7F);
+    return i;
+}
+static size_t pb_field_varint(uint8_t *out, uint8_t field, uint32_t n) {
+    size_t i = 0;
+    out[i++] = (uint8_t)((field << 3) | 0);  // wire type 0
+    i += pb_varint(out + i, n);
+    return i;
+}
+static size_t pb_field_string(uint8_t *out, uint8_t field, const char *s) {
+    size_t slen = strlen(s);
+    size_t i = 0;
+    out[i++] = (uint8_t)((field << 3) | 2);  // wire type 2
+    i += pb_varint(out + i, (uint32_t)slen);
+    memcpy(out + i, s, slen);
+    return i + slen;
+}
+
+// CommCmdResDTO: field 1=time, 2=action, 5=tid, 6=data
+static size_t build_commcmd_res(uint8_t *out, int32_t action, const char *data) {
+    uint32_t t = (uint32_t)time(nullptr);
+    size_t i = 0;
+    i += pb_field_varint(out + i, 1, t);
+    i += pb_field_varint(out + i, 2, (uint32_t)action);
+    i += pb_field_varint(out + i, 5, t);
+    i += pb_field_string(out + i, 6, data);
+    return i;
+}
+// CommCmdStatusResDTO: field 1=time, 2=action, 4=tid
+static size_t build_commcmd_status_res(uint8_t *out, int32_t action) {
+    uint32_t t = (uint32_t)time(nullptr);
+    size_t i = 0;
+    i += pb_field_varint(out + i, 1, t);
+    i += pb_field_varint(out + i, 2, (uint32_t)action);
+    i += pb_field_varint(out + i, 4, t);
+    return i;
+}
+
+// Walk a flat protobuf message for a single varint field (returns false if
+// absent). Good enough for the CommCmdStatusReqDTO reply (action=3, sts=11).
+static bool pb_get_varint_field(const uint8_t *pt, size_t len, uint8_t want_field,
+                                uint32_t *out) {
+    size_t off = 0;
+    while (off < len) {
+        uint32_t tag = 0; int shift = 0;
+        while (off < len) { uint8_t b = pt[off++]; tag |= (uint32_t)(b & 0x7F) << shift;
+                            if (!(b & 0x80)) break; shift += 7; }
+        uint8_t field = tag >> 3, wire = tag & 7;
+        if (wire == 0) {
+            uint32_t v = 0; shift = 0;
+            while (off < len) { uint8_t b = pt[off++]; v |= (uint32_t)(b & 0x7F) << shift;
+                                if (!(b & 0x80)) break; shift += 7; }
+            if (field == want_field) { *out = v; return true; }
+        } else if (wire == 2) {
+            uint32_t n = 0; shift = 0;
+            while (off < len) { uint8_t b = pt[off++]; n |= (uint32_t)(b & 0x7F) << shift;
+                                if (!(b & 0x80)) break; shift += 7; }
+            off += n;
+        } else if (wire == 1) { off += 8; }
+        else if (wire == 5) { off += 4; }
+        else return false;
     }
-    size_t pb_len = ostream.bytes_written;
+    return false;
+}
 
-    // Derive V1 key and nonce
+// Send one V1 (encRand-keyed GCM) CommCmd frame and await its reply. On success
+// copies the decrypted reply plaintext into pt_out and returns its length; 0 on
+// any transport/crypto failure. send_cmd is 0xA318 or 0xA319; the DTU replies on
+// send_cmd - 0x0100.
+static size_t commcmd_request(uint16_t *tid, const uint8_t enc_rand[16],
+                              uint16_t send_cmd, const uint8_t *pb_buf, size_t pb_len,
+                              uint8_t *pt_out, size_t pt_out_cap) {
+    uint16_t req_tid = *tid;
+    uint16_t reply_cmd = send_cmd - 0x0100;
+
     uint8_t key[16], nonce[12], tag[16];
     v1_derive_key(enc_rand, key);
-    v1_derive_nonce(CMD_COMMCMD, *tid, enc_rand, nonce);
+    v1_derive_nonce(send_cmd, *tid, enc_rand, nonce);
+    uint8_t aad[4] = { (uint8_t)(send_cmd & 0xFF), (uint8_t)((send_cmd >> 8) & 0xFF),
+                       (uint8_t)(*tid & 0xFF), (uint8_t)((*tid >> 8) & 0xFF) };
 
-    // AAD = LE_u16(cmd) + LE_u16(tid) = {cmd_lo, cmd_hi, tid_lo, tid_hi}
-    uint8_t aad[4] = {
-        (uint8_t)(CMD_COMMCMD & 0xFF),
-        (uint8_t)((CMD_COMMCMD >> 8) & 0xFF),
-        (uint8_t)(*tid & 0xFF),
-        (uint8_t)((*tid >> 8) & 0xFF)
-    };
-
-    // V1 encrypt (GCM: ciphertext same size as plaintext)
     uint8_t ct[TX_BUF_LEN];
     if (!v1_encrypt(pb_buf, pb_len, key, nonce, aad, sizeof(aad), ct, tag)) {
         Serial.println("[HS] CommCmd: v1_encrypt failed");
-        return false;
+        return 0;
     }
-
-    // Build frame WITH tag; ct_len = pb_len (GCM doesn't pad)
     uint8_t frame[TX_BUF_LEN + 64];
-    size_t frame_len = frame_build(frame, sizeof(frame),
-                                   CMD_COMMCMD, *tid, ct, pb_len, tag);
-    if (frame_len == 0) {
-        Serial.println("[HS] CommCmd: frame_build failed");
-        return false;
-    }
-
-    // Increment tid after building frame
+    size_t frame_len = frame_build(frame, sizeof(frame), send_cmd, *tid, ct, pb_len, tag);
     (*tid)++;
+    if (frame_len == 0) { Serial.println("[HS] CommCmd: frame_build failed"); return 0; }
 
-    // Register callback and arm RX before writing, so a fast response cannot
-    // land in the window between the write and wait_for_rx().
     ble_set_rx_callback(rx_handler);
     rx_reset();
-
-    if (!ble_write(frame, frame_len)) {
-        Serial.println("[HS] CommCmd: ble_write failed");
-        return false;
-    }
-
-    // Wait for any response (success if we receive anything)
+    if (!ble_write(frame, frame_len)) { Serial.println("[HS] CommCmd: ble_write failed"); return 0; }
     if (!wait_for_rx(RESPONSE_TIMEOUT_MS)) {
-        Serial.printf("[HS] CommCmd action=%d: timeout\n", (int)action);
-        return false;
+        Serial.printf("[HS] CommCmd cmd=0x%04X: timeout\n", send_cmd);
+        return 0;
     }
 
     uint16_t rcmd, rtid, rcrc, rlen;
     if (!frame_parse_header((const uint8_t *)s_rx_buf, s_rx_len, &rcmd, &rtid, &rcrc, &rlen)) {
-        Serial.println("[HS] CommCmd: frame_parse_header failed");
-        return false;
+        Serial.println("[HS] CommCmd: parse header failed"); return 0;
     }
-    if (rcmd != CMD_COMMCMD) {
-        Serial.printf("[HS] CommCmd: unexpected cmd 0x%04X\n", rcmd);
-        return false;
-    }
-    if (rtid != req_tid) {
-        Serial.printf("[HS] CommCmd: tid mismatch (req=%u resp=%u)\n", req_tid, rtid);
-        return false;
-    }
+    if (rcmd != reply_cmd) Serial.printf("[HS] CommCmd: cmd 0x%04X (expected 0x%04X)\n", rcmd, reply_cmd);
     if (rlen < HM_HEADER_LEN || (size_t)rlen + 16 > s_rx_len) {
-        Serial.println("[HS] CommCmd: bad frame length");
-        return false;
+        Serial.println("[HS] CommCmd: bad frame length"); return 0;
     }
     size_t resp_ct_len = (size_t)rlen - HM_HEADER_LEN;
-    if (resp_ct_len == 0) { Serial.println("[HS] CommCmd: empty ct"); return false; }
+    if (resp_ct_len == 0 || resp_ct_len > pt_out_cap) return 0;
     const uint8_t *resp_ct = frame_payload((const uint8_t *)s_rx_buf, s_rx_len);
     const uint8_t *resp_tag = (const uint8_t *)s_rx_buf + rlen;
     if (crc16_modbus(resp_ct, resp_ct_len) != rcrc) {
-        Serial.println("[HS] CommCmd: CRC mismatch.");
-        return false;
+        Serial.println("[HS] CommCmd: CRC mismatch"); return 0;
     }
     uint8_t rkey[16], rnonce[12];
     v1_derive_key(enc_rand, rkey);
-    v1_derive_nonce(CMD_COMMCMD, rtid, enc_rand, rnonce);
-    uint8_t raad[4] = {
-        (uint8_t)(CMD_COMMCMD & 0xFF), (uint8_t)((CMD_COMMCMD >> 8) & 0xFF),
-        (uint8_t)(rtid & 0xFF), (uint8_t)((rtid >> 8) & 0xFF)
-    };
-    uint8_t rpt[TX_BUF_LEN];
-    if (resp_ct_len > sizeof(rpt)) return false;
-    if (!v1_decrypt(resp_ct, resp_ct_len, rkey, rnonce, raad, sizeof(raad), resp_tag, rpt)) {
-        Serial.println("[HS] CommCmd: GCM auth failure.");
+    v1_derive_nonce(rcmd, rtid, enc_rand, rnonce);
+    uint8_t raad[4] = { (uint8_t)(rcmd & 0xFF), (uint8_t)((rcmd >> 8) & 0xFF),
+                        (uint8_t)(rtid & 0xFF), (uint8_t)((rtid >> 8) & 0xFF) };
+    if (!v1_decrypt(resp_ct, resp_ct_len, rkey, rnonce, raad, sizeof(raad), resp_tag, pt_out)) {
+        Serial.println("[HS] CommCmd: GCM auth failure"); return 0;
+    }
+    (void)req_tid;
+    return resp_ct_len;
+}
+
+// Run the CommCmd application-layer handshake (reference async_do_comm_cmd_handshake):
+//   action=64 login (data=bleId) -> poll status; if sts=3, action=82 PIN -> poll;
+//   then action=104 time-sync -> poll. Returns true once time-sync is sent OK.
+static bool do_commcmd_handshake(uint16_t *tid, const uint8_t enc_rand[16],
+                                 const char *ble_id, const char *pin) {
+    uint8_t pb[TX_BUF_LEN], pt[TX_BUF_LEN];
+    uint32_t action, sts;
+    int login_sts = -1;
+
+    // ---- Step 1: action=64 login (data = bleId) ----
+    Serial.printf("[HS] CommCmd login (action=64, bleId=%s)\n", ble_id);
+    size_t n = build_commcmd_res(pb, COMMCMD_LOGIN, ble_id);
+    if (commcmd_request(tid, enc_rand, CMD_COMMCMD_SEND, pb, n, pt, sizeof(pt)) == 0) {
+        Serial.println("[HS] CommCmd: login send failed (dormant or encRand stale)");
+    } else {
+        for (int i = 0; i < 5; i++) {
+            n = build_commcmd_status_res(pb, COMMCMD_LOGIN);
+            size_t rn = commcmd_request(tid, enc_rand, CMD_COMMSTS_SEND, pb, n, pt, sizeof(pt));
+            if (rn == 0) break;
+            sts = 0; pb_get_varint_field(pt, rn, 11, &sts);
+            action = 0; pb_get_varint_field(pt, rn, 3, &action);
+            Serial.printf("[HS] login poll: action=%u sts=%u\n", action, sts);
+            if (sts == 0) { delay(1000); esp_task_wdt_reset(); continue; }  // in-progress
+            login_sts = (int)sts;
+            break;
+        }
+    }
+
+    // ---- Step 2: action=82 PIN if bleId not whitelisted (sts=3) ----
+    if (login_sts == 3) {
+        if (!pin || pin[0] == '\0') {
+            Serial.println("[HS] CommCmd: device wants a PIN (sts=3) but BLE_PIN is empty. "
+                           "Set BLE_PIN in config.h to the S-Miles app PIN.");
+        } else {
+            Serial.println("[HS] CommCmd: sts=3 -> sending PIN (action=82)");
+            n = build_commcmd_res(pb, COMMCMD_PIN, pin);
+            if (commcmd_request(tid, enc_rand, CMD_COMMCMD_SEND, pb, n, pt, sizeof(pt)) != 0) {
+                for (int i = 0; i < 8; i++) {
+                    n = build_commcmd_status_res(pb, COMMCMD_PIN);
+                    size_t rn = commcmd_request(tid, enc_rand, CMD_COMMSTS_SEND, pb, n, pt, sizeof(pt));
+                    if (rn == 0) break;
+                    sts = 1; pb_get_varint_field(pt, rn, 11, &sts);
+                    Serial.printf("[HS] PIN poll: sts=%u\n", sts);
+                    if (sts == 0) { login_sts = 1; break; }       // success
+                    if (sts == 1) { Serial.println("[HS] CommCmd: WRONG PIN"); break; }
+                    delay(1000); esp_task_wdt_reset();
+                }
+            }
+        }
+    }
+
+    // ---- Step 3: action=104 time-sync (always; reference does it regardless) ----
+    char time_data[40];
+    snprintf(time_data, sizeof(time_data), "%lu,%d\r", (unsigned long)time(nullptr), 28800);
+    Serial.println("[HS] CommCmd time-sync (action=104)");
+    n = build_commcmd_res(pb, COMMCMD_TIME_SYNC, time_data);
+    if (commcmd_request(tid, enc_rand, CMD_COMMCMD_SEND, pb, n, pt, sizeof(pt)) == 0) {
+        Serial.println("[HS] CommCmd: time-sync send failed");
         return false;
     }
-    (void)rpt;  // decrypt output unused; GCM tag verification is the point
-    // The device's CommCmd reply decodes as CommandReqDTO, which carries no
-    // err_code in this proto (err_code lives on CommandResDTO, which we SEND).
-    // GCM auth + cmd/tid match already prove this is an authentic response to
-    // our exact request — far stronger than the old "any frame = success".
+    n = build_commcmd_status_res(pb, COMMCMD_TIME_SYNC);
+    size_t rn = commcmd_request(tid, enc_rand, CMD_COMMSTS_SEND, pb, n, pt, sizeof(pt));
+    if (rn) { sts = 0; pb_get_varint_field(pt, rn, 11, &sts);
+              Serial.printf("[HS] time-sync poll: sts=%u\n", sts); }
+
+    Serial.printf("[HS] CommCmd handshake done (login_sts=%d)\n", login_sts);
     return true;
 }
 
@@ -367,18 +462,11 @@ bool handshake_run(const char *sn, uint16_t *tid, uint8_t enc_rand_out[16]) {
         Serial.println("[HS] encRand loaded from NVS");
     }
 
-    // CommCmd login (action=64)
-    Serial.println("[HS] CommCmd login...");
-    if (!do_commcmd(sn, tid, enc_rand_out, COMMCMD_LOGIN)) {
-        Serial.println("[HS] CommCmd login failed");
-        return false;
-    }
-    delay(200);
-
-    // CommCmd time-sync (action=104)
-    Serial.println("[HS] CommCmd time-sync...");
-    if (!do_commcmd(sn, tid, enc_rand_out, COMMCMD_TIME_SYNC)) {
-        Serial.println("[HS] CommCmd time-sync failed");
+    // CommCmd application-layer handshake: required after every BLE (re)connect
+    // before the DTU will answer V1 data requests (RealDataNew). Empirically
+    // confirmed: without it, RealDataNew times out.
+    if (!do_commcmd_handshake(tid, enc_rand_out, BLE_ID, BLE_PIN)) {
+        Serial.println("[HS] CommCmd handshake failed");
         return false;
     }
 
