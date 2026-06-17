@@ -122,8 +122,16 @@ bool ble_connect(const char *name_prefix, const char *sn_filter,
                   (unsigned)s_client->getMTU(),
                   s_tx->canWrite(), s_tx->canWriteNoResponse(),
                   can_notify, can_indicate);
-    bool want_notifications = can_notify;   // prefer notify; else indications
-    if (!s_rx->subscribe(want_notifications, notify_cb)) {
+    // RX (0xffe2) advertises both notify and indicate; the working reference
+    // (bleak) receives notifications. Subscribe for notify, but force the CCCD
+    // descriptor write to be ACKNOWLEDGED (response=true). NimBLE writes the
+    // CCCD WITHOUT response by default; if the DTU only arms notifications on an
+    // acknowledged CCCD write, the default leaves notifications never actually
+    // enabled — explaining ATT-ACK'd data writes but zero RX.
+    bool want_notifications = can_notify ? true : false;
+    Serial.printf("[BLE] Subscribing for %s (CCCD write-with-response)\n",
+                  want_notifications ? "NOTIFY" : "INDICATE");
+    if (!s_rx->subscribe(want_notifications, notify_cb, /*response=*/true)) {
         Serial.println("[BLE] Subscribe failed.");
         s_client->disconnect();
         NimBLEDevice::deleteClient(s_client);
@@ -145,6 +153,10 @@ bool ble_write(const uint8_t *data, size_t len) {
     uint16_t mtu = s_client->getMTU();
     if (mtu < 23) mtu = 23;   // never underflow if MTU not yet negotiated
     mtu -= 3;
+    size_t nchunks = (len + mtu - 1) / mtu;
+    Serial.printf("[BLE] TX len=%u mtu_payload=%u -> %u chunk(s)%s\n",
+                  (unsigned)len, (unsigned)mtu, (unsigned)nchunks,
+                  nchunks > 1 ? " (FRAGMENTED!)" : "");
     size_t offset = 0;
     while (offset < len) {
         size_t chunk = (len - offset > mtu) ? mtu : (len - offset);
