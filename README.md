@@ -113,9 +113,10 @@ python3 -m platformio run -e esp32 -t upload
 python3 -m platformio device monitor -b 115200
 ```
 
-A healthy boot log walks through: WiFi connect → BLE scan/connect → handshake
-(`encRand` from NVS or fresh V0 pairing) → MQTT connect → `[PL] Published …`
-every 30 s.
+A healthy boot log walks through: WiFi connect → MQTT connect (so health is
+reported immediately) → BLE scan/connect → handshake (`encRand` from NVS or fresh
+V0 pairing) → `[PL] Published …` every 30 s. When the inverter is asleep the BLE
+step keeps failing (`diag/ble_state=searching`) but MQTT stays connected.
 
 Then verify on the broker — every topic is retained:
 
@@ -146,7 +147,17 @@ tail auto-discovered from the inverter's `RMI-` BLE advertisement:
 | `energy_total` | kWh | sum of panel lifetime totals |
 | `last_seen` | epoch s | timestamp of last publish |
 | `firmware_version` | — | published on MQTT connect |
-| `status` | `online`/`offline` | retained; `offline` is the MQTT Last-Will |
+| `status` | `online`/`offline` | retained; **bridge** liveness — `online` once the ESP32 is on the broker, `offline` is the MQTT Last-Will (ESP32 down). *Not* inverter production: at night the bridge stays `online` while the inverter sleeps |
+| `diag/reset_reason` | — | cause of the last reboot: `poweron`, `brownout`, `task_wdt`, `panic`, … (retained) |
+| `diag/uptime_s` | s | seconds since boot — resets to ~0 mean the device is rebooting |
+| `diag/free_heap` / `diag/min_free_heap` | bytes | current / lowest-ever free heap; a steady decline signals a leak |
+| `diag/wifi_rssi` | dBm | WiFi signal strength |
+| `diag/ble_state` | — | `searching` (inverter asleep / out of range), `ready`, `polling`, `poll_fail`, `wifi_down` |
+
+The `diag/*` topics are published every cycle **even while the inverter is asleep**,
+because MQTT is kept connected independently of BLE. That makes a headless device
+diagnosable remotely: if it stops waking at sunrise, `diag/reset_reason` and
+`diag/uptime_s` tell you whether it brown-outs, watchdog-resets, or hangs.
 
 ## Troubleshooting
 
@@ -167,6 +178,16 @@ tail auto-discovered from the inverter's `RMI-` BLE advertisement:
   automatically; a power-cycle also forces a fresh pairing attempt.
 - **Boot-loops / watchdog resets** — usually a blocking WiFi/MQTT connect; check
   credentials and broker reachability in the serial log.
+- **Stops publishing overnight and never wakes at sunrise** — the usual cause is
+  a **stale pairing**: the DTU forgets its `encRand` when it powers down at night,
+  so the next morning the cached secret is rejected (BLE connects, then the DTU
+  drops the link mid-login — `diag/ble_state` cycles `ready`→`searching`). The
+  firmware now detects a handshake that fails *with a live BLE link* and re-pairs
+  (V0) automatically after a couple of tries. If it still won't come up, check the
+  other `diag/` fields: `reset_reason=brownout` points at an under-spec USB supply
+  sagging under RF load; a climbing-then-crashing `uptime_s` or falling
+  `min_free_heap` points at a resource leak. The bridge keeps MQTT (and `diag/*`)
+  alive while the inverter sleeps precisely so this is visible the next morning.
 
 ## Project layout
 

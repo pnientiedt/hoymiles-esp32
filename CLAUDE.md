@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **⚠️ THIS IS A PUBLIC REPOSITORY.** Never commit private data — not in source,
+> not in docs, not in tests, not in example/log files, not in commit messages.
+> This includes WiFi/MQTT credentials, broker hostnames or LAN IPs, the BLE PIN,
+> the inverter serial / `bleId`, `encRand`, and any other per-deployment secret.
+> Real values live only in gitignored `src/secrets.h` and the local `ble-test/`
+> harness (which reads them from CLI args / env vars, never hardcoded). When
+> adding tests or examples, use placeholders. Before any commit, double-check the
+> diff for leaked secrets.
+
 ## Project
 
 ESP32 firmware (PlatformIO + Arduino) that bridges a Hoymiles HMS-800-2WB
@@ -74,9 +83,17 @@ inverts: orchestration (`handshake`, `poller`, `main`) depends on primitives
   (`Preferences`).
 - **`poller`** — RealDataNew request → reassemble paged BLE notifications →
   nanopb decode → scale → MQTT publish. Paged responses are all-or-nothing.
-- **`main`** — `setup`/`loop` state machine: WiFi → BLE+handshake → MQTT → poll,
-  with reconnect on each layer and a task watchdog. BLE is discovered before MQTT
-  because the MQTT topics/Last-Will embed the runtime-discovered serial.
+- **`main`** — `setup`/`loop` state machine: WiFi → MQTT → BLE+handshake → poll,
+  with reconnect on each layer and a task watchdog. **MQTT is kept connected
+  independently of BLE** so the bridge reports health (and a `diag/` namespace:
+  `reset_reason`, `uptime_s`, `free_heap`/`min_free_heap`, `wifi_rssi`,
+  `ble_state`) all night while the inverter's radio is off — `status=offline`
+  (Last-Will) therefore means the ESP32 itself is down, not "inverter asleep".
+  The serial that the MQTT topics/Last-Will embed is discovered over BLE, so it's
+  cached in NVS (`sn` key, `hoymiles` namespace) and loaded at boot; before the
+  first-ever BLE contact, topics fall back to a chip-ID (`esp32-<mac>`) so health
+  still publishes. The long BLE-retry/poll-interval idle waits pump `s_mqtt.loop()`
+  as well as the watchdog (`idle_wait`).
 
 ### Protocol invariants (get these wrong and nothing decrypts)
 

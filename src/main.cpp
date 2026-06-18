@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
+#include <esp_system.h>
 #include <time.h>
 #include "config.h"
 #include "ble_client.h"
@@ -15,7 +17,18 @@
 // Wipe the paired encRand (forcing a full V0 re-pairing) only after this many
 // consecutive poll failures — a single transient timeout shouldn't trigger it.
 #define POLL_FAIL_THRESHOLD 3
+// Re-pair after this many handshakes that fail *with a live BLE link*. The DTU
+// drops its pairing when it powers down overnight, so the cached encRand goes
+// stale and login is rejected — re-pairing (V0) is the only recovery. Without
+// this the bridge retries the dead secret forever and never wakes at sunrise.
+#define HANDSHAKE_FAIL_THRESHOLD 2
 #define FW_VERSION "esp32-1.0.0"
+
+// NVS (Preferences) — shares the handshake namespace; the serial is cached so
+// the bridge can build its MQTT topics and report health BEFORE its first BLE
+// contact of a boot (e.g. when the inverter is asleep at sunrise).
+#define NVS_NS      "hoymiles"
+#define NVS_KEY_SN  "sn"
 
 static WiFiClient   s_wifi_client;
 static PubSubClient s_mqtt(s_wifi_client);
@@ -24,9 +37,108 @@ static uint16_t s_tid = 1;
 static uint8_t  s_enc_rand[16] = {0};
 static bool     s_enc_rand_ready = false;
 static int      s_poll_failures = 0;
+static int      s_handshake_failures = 0;
 static char     s_sn[16] = {0};
+static char     s_saved_sn[16] = {0};       // serial currently persisted in NVS
 static char     s_base_topic[64] = {0};
 static char     s_status_topic[80] = {0};
+// Coarse BLE/poll state, surfaced over MQTT so a headless device can be diagnosed
+// remotely. "searching" is the normal nightly state (inverter radio off).
+static const char *s_ble_state = "boot";
+
+// ---- NVS serial cache --------------------------------------------------------
+
+static void load_sn_from_nvs(void) {
+    Preferences prefs;
+    prefs.begin(NVS_NS, true);
+    String sn = prefs.getString(NVS_KEY_SN, "");
+    prefs.end();
+    if (sn.length() > 0 && sn.length() < sizeof(s_sn)) {
+        strncpy(s_sn, sn.c_str(), sizeof(s_sn) - 1);
+        s_sn[sizeof(s_sn) - 1] = '\0';
+        strncpy(s_saved_sn, s_sn, sizeof(s_saved_sn) - 1);
+    }
+}
+
+static void save_sn_to_nvs(const char *sn) {
+    Preferences prefs;
+    prefs.begin(NVS_NS, false);
+    prefs.putString(NVS_KEY_SN, sn);
+    prefs.end();
+    strncpy(s_saved_sn, sn, sizeof(s_saved_sn) - 1);
+    s_saved_sn[sizeof(s_saved_sn) - 1] = '\0';
+}
+
+// ---- MQTT topics -------------------------------------------------------------
+
+static void build_topics(const char *sn) {
+    snprintf(s_base_topic, sizeof(s_base_topic), "%s%s/", MQTT_TOPIC_PREFIX, sn);
+    snprintf(s_status_topic, sizeof(s_status_topic), "%sstatus", s_base_topic);
+}
+
+// Ensure MQTT topics exist even before the inverter's serial is discovered over
+// BLE: prefer the NVS-cached serial, then a chip-ID fallback so a fresh flash can
+// still report health. The real serial replaces it once the inverter is seen.
+static void ensure_topics(void) {
+    if (s_base_topic[0] != '\0') return;
+    if (s_sn[0] == '\0') {
+        uint64_t mac = ESP.getEfuseMac();
+        snprintf(s_sn, sizeof(s_sn), "esp32-%06llX",
+                 (unsigned long long)(mac & 0xFFFFFF));
+    }
+    build_topics(s_sn);
+}
+
+// ---- Diagnostics -------------------------------------------------------------
+
+static const char *reset_reason_str(void) {
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   return "poweron";
+        case ESP_RST_EXT:       return "ext";
+        case ESP_RST_SW:        return "sw";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int_wdt";
+        case ESP_RST_TASK_WDT:  return "task_wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
+// Publish device health under <base>/diag/. Retained, so the broker always holds
+// the latest snapshot — crucially, reset_reason persists the cause of the last
+// reboot (brownout vs. watchdog vs. clean power-on) for after-the-fact diagnosis.
+static void publish_diag(void) {
+    if (!s_mqtt.connected() || s_base_topic[0] == '\0') return;
+    char topic[112];
+    char val[32];
+
+    snprintf(topic, sizeof(topic), "%sdiag/reset_reason", s_base_topic);
+    s_mqtt.publish(topic, reset_reason_str(), true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/uptime_s", s_base_topic);
+    snprintf(val, sizeof(val), "%lu", (unsigned long)(millis() / 1000));
+    s_mqtt.publish(topic, val, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/free_heap", s_base_topic);
+    snprintf(val, sizeof(val), "%u", (unsigned)esp_get_free_heap_size());
+    s_mqtt.publish(topic, val, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/min_free_heap", s_base_topic);
+    snprintf(val, sizeof(val), "%u", (unsigned)esp_get_minimum_free_heap_size());
+    s_mqtt.publish(topic, val, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/wifi_rssi", s_base_topic);
+    snprintf(val, sizeof(val), "%d", (int)WiFi.RSSI());
+    s_mqtt.publish(topic, val, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/ble_state", s_base_topic);
+    s_mqtt.publish(topic, s_ble_state, true);
+}
+
+// ---- Connectivity ------------------------------------------------------------
 
 static bool wifi_connect(void) {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -65,6 +177,11 @@ static bool mqtt_connect(void) {
         return false;
     }
     Serial.println("[MQTT] Connected.");
+    // status=online now means "the bridge is alive and on the broker" — NOT "the
+    // inverter is producing". The Last-Will flips it to offline only when the
+    // ESP32 itself drops, making offline a true device-down alarm. Whether the
+    // inverter is awake is shown by diag/ble_state and the freshness of ac/*.
+    s_mqtt.publish(s_status_topic, "online", true);
     char ver_topic[96];
     snprintf(ver_topic, sizeof(ver_topic), "%sfirmware_version", s_base_topic);
     s_mqtt.publish(ver_topic, FW_VERSION, true);
@@ -74,12 +191,29 @@ static bool mqtt_connect(void) {
 static bool ble_connect_and_handshake(void) {
     if (!ble_connect(BLE_NAME_PREFIX, INVERTER_SN_FILTER, s_sn, sizeof(s_sn))) return false;
     Serial.printf("[main] Inverter SN: %s\n", s_sn);
-    snprintf(s_base_topic, sizeof(s_base_topic), "%s%s/", MQTT_TOPIC_PREFIX, s_sn);
-    snprintf(s_status_topic, sizeof(s_status_topic), "%sstatus", s_base_topic);
+    // The discovered serial is authoritative — rebuild topics on it and cache it
+    // so the next boot can report under the right serial before BLE comes up.
+    build_topics(s_sn);
+    if (strcmp(s_sn, s_saved_sn) != 0) save_sn_to_nvs(s_sn);
     if (!handshake_run(s_sn, &s_tid, s_enc_rand)) {
+        // We connected over BLE but login/time-sync failed. The usual cause is a
+        // stale cached encRand (the DTU forgets its pairing when it powers down
+        // for the night). Clear NVS after a couple of tries so the next attempt
+        // re-pairs from scratch — unlike poll failures, handshake failures
+        // otherwise never trigger a re-pair, so the bridge would retry the dead
+        // secret forever and never recover at sunrise. ble_connect failing (the
+        // inverter being asleep/unreachable) does NOT reach here, so an asleep
+        // inverter never needlessly wipes a good pairing.
+        if (++s_handshake_failures >= HANDSHAKE_FAIL_THRESHOLD) {
+            Serial.printf("[main] %d handshakes failed with a live BLE link, "
+                          "clearing NVS to force re-pairing.\n", s_handshake_failures);
+            handshake_clear_nvs();
+            s_handshake_failures = 0;
+        }
         ble_disconnect();
         return false;
     }
+    s_handshake_failures = 0;
     s_enc_rand_ready = true;
     return true;
 }
@@ -94,41 +228,58 @@ void setup(void) {
     esp_task_wdt_init(WDT_TIMEOUT_S, true);
     esp_task_wdt_add(NULL);
 
+    load_sn_from_nvs();
     s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
     // Authoritative MQTT buffer control (runtime); PubSubClient reallocates here.
     s_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
     ble_init();
 }
 
-// delay() that keeps feeding the task watchdog. A bare delay() longer than
-// WDT_TIMEOUT_S trips a panic reset — notably the 60s BLE retry wait, which is
-// twice the watchdog window when the inverter is offline (e.g. at night).
-static void wdt_safe_delay(uint32_t ms) {
+// Idle wait that keeps the system live: feeds the task watchdog AND pumps the
+// MQTT client so the connection (and its keepalive) survives the wait. A bare
+// delay() longer than WDT_TIMEOUT_S trips a panic reset; not pumping MQTT during
+// the 60s BLE-retry wait would let the broker drop the link every night.
+static void idle_wait(uint32_t ms) {
     uint32_t start = millis();
     while ((millis() - start) < ms) {
         esp_task_wdt_reset();
-        uint32_t elapsed = millis() - start;
-        uint32_t remaining = (ms > elapsed) ? (ms - elapsed) : 0;
-        delay(remaining < WDT_FEED_SLICE_MS ? remaining : WDT_FEED_SLICE_MS);
+        s_mqtt.loop();
+        delay(WDT_FEED_SLICE_MS);
     }
 }
 
 void loop(void) {
     esp_task_wdt_reset();
 
-    if (!wifi_connect()) { wdt_safe_delay(WIFI_RETRY_MS); return; }
+    // 1. WiFi underpins both MQTT and (indirectly) remote visibility.
+    if (!wifi_connect()) { s_ble_state = "wifi_down"; idle_wait(WIFI_RETRY_MS); return; }
 
+    // 2. Build topics from a known serial (NVS cache / chip-ID fallback) so MQTT
+    //    and diagnostics work even before the inverter's serial is discovered.
+    ensure_topics();
+
+    // 3. Keep MQTT up INDEPENDENTLY of BLE. This is the core robustness change:
+    //    the bridge stays on the broker and reports health all night while the
+    //    inverter sleeps, instead of going dark and only surfacing as a stale
+    //    Last-Will. Now status=offline genuinely means the ESP32 is down.
+    if (!mqtt_connect()) { idle_wait(MQTT_RETRY_MS); return; }
+
+    // 4. (Re)establish BLE if needed. Failure here is usually just the inverter's
+    //    radio being off (night / no PV) — keep MQTT alive and keep reporting.
     if (!ble_is_connected() || !s_enc_rand_ready) {
         if (!ble_connect_and_handshake()) {
-            wdt_safe_delay(BLE_RETRY_MS);
+            s_ble_state = "searching";
+            publish_diag();
+            idle_wait(BLE_RETRY_MS);   // pumps MQTT + WDT during the wait
             return;
         }
+        s_ble_state = "ready";
     }
 
-    if (!mqtt_connect()) { wdt_safe_delay(MQTT_RETRY_MS); return; }
-
+    // 5. Poll the inverter and publish live data.
     if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand)) {
         s_poll_failures++;
+        s_ble_state = "poll_fail";
         // Drop the BLE link so the next loop re-handshakes (reloading encRand
         // from NVS — cheap). Only wipe NVS, forcing a full V0 re-pairing, once
         // failures persist; a one-off timeout must not clear the pairing.
@@ -142,18 +293,11 @@ void loop(void) {
         ble_disconnect();
     } else {
         s_poll_failures = 0;
-        s_mqtt.publish(s_status_topic, "online", true);
+        s_ble_state = "polling";
     }
 
-    s_mqtt.loop();
+    publish_diag();
 
-    // Slice the poll-interval wait so we keep feeding the watchdog and pumping
-    // MQTT. A single delay(POLL_INTERVAL_MS) would equal the WDT timeout and
-    // never reset it, tripping a panic reset on every normal idle cycle.
-    uint32_t wait_start = millis();
-    while ((millis() - wait_start) < POLL_INTERVAL_MS) {
-        esp_task_wdt_reset();
-        s_mqtt.loop();
-        delay(WDT_FEED_SLICE_MS);
-    }
+    // 6. Idle until the next poll, pumping MQTT + WDT throughout.
+    idle_wait(POLL_INTERVAL_MS);
 }
