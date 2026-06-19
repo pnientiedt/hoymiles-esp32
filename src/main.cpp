@@ -280,7 +280,7 @@ void loop(void) {
     }
 
     // 5. Poll the inverter and publish live data.
-    if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand)) {
+    if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand, nullptr, nullptr)) {
         s_poll_failures++;
         s_ble_state = "poll_fail";
         // Drop the BLE link so the next loop re-handshakes (reloading encRand

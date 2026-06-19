@@ -195,7 +195,8 @@ static bool publish_str_checked(PubSubClient &mqtt, const char *subtopic, const 
 // ---------------------------------------------------------------------------
 
 bool poller_poll(PubSubClient &mqtt, const char *base_topic,
-                 uint16_t *tid, const uint8_t enc_rand[16]) {
+                 uint16_t *tid, const uint8_t enc_rand[16],
+                 uint8_t *out_ports, uint8_t *out_port_count) {
     s_base_topic = base_topic;
     ble_set_rx_callback(rx_handler);
 
@@ -296,5 +297,16 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
     Serial.printf("[PL] Published. ac_power=%.1fW  pv_panels=%d\n",
                   combined.has_sgs_data ? combined.sgs_data.active_power / 10.0f : 0.0f,
                   (int)combined.pv_data_count);
+
+    // Report discovered PV ports so the caller can zero per-panel energy_today
+    // while the inverter is offline (nightly reset lives in main).
+    if (out_ports && out_port_count) {
+        uint8_t n = 0;
+        for (pb_size_t i = 0; i < combined.pv_data_count && n < 4; i++) {
+            out_ports[n++] = (uint8_t)combined.pv_data[i].port_number;
+        }
+        *out_port_count = n;
+    }
+
     return true;
 }
