@@ -9,6 +9,7 @@
 #include "ble_client.h"
 #include "handshake.h"
 #include "poller.h"
+#include "energy_reset.h"
 
 #define WDT_TIMEOUT_S 30
 // Must stay well under WDT_TIMEOUT_S so the watchdog is fed during idle waits.
@@ -29,6 +30,8 @@
 // contact of a boot (e.g. when the inverter is asleep at sunrise).
 #define NVS_NS      "hoymiles"
 #define NVS_KEY_SN  "sn"
+#define NVS_KEY_EDAY  "eday"      // local-day key of last energy publish (uint32)
+#define NVS_KEY_PORTS "pvports"   // discovered PV port numbers (bytes)
 
 static WiFiClient   s_wifi_client;
 static PubSubClient s_mqtt(s_wifi_client);
@@ -42,6 +45,9 @@ static char     s_sn[16] = {0};
 static char     s_saved_sn[16] = {0};       // serial currently persisted in NVS
 static char     s_base_topic[64] = {0};
 static char     s_status_topic[80] = {0};
+static uint32_t s_energy_day = 0;            // 0 = unknown (no publish yet / unsynced)
+static uint8_t  s_pv_ports[MAX_PV_PORTS] = {0};
+static uint8_t  s_pv_port_count = 0;
 // Coarse BLE/poll state, surfaced over MQTT so a headless device can be diagnosed
 // remotely. "searching" is the normal nightly state (inverter radio off).
 static const char *s_ble_state = "boot";
@@ -67,6 +73,35 @@ static void save_sn_to_nvs(const char *sn) {
     prefs.end();
     strncpy(s_saved_sn, sn, sizeof(s_saved_sn) - 1);
     s_saved_sn[sizeof(s_saved_sn) - 1] = '\0';
+}
+
+// ---- NVS energy-reset state --------------------------------------------------
+
+static void load_energy_state_from_nvs(void) {
+    Preferences prefs;
+    prefs.begin(NVS_NS, true);
+    s_energy_day = prefs.getUInt(NVS_KEY_EDAY, 0);
+    size_t n = prefs.getBytes(NVS_KEY_PORTS, s_pv_ports, sizeof(s_pv_ports));
+    prefs.end();
+    s_pv_port_count = (n <= MAX_PV_PORTS) ? (uint8_t)n : 0;
+}
+
+static void save_energy_day_to_nvs(uint32_t day) {
+    Preferences prefs;
+    prefs.begin(NVS_NS, false);
+    prefs.putUInt(NVS_KEY_EDAY, day);
+    prefs.end();
+    s_energy_day = day;
+}
+
+static void save_pv_ports_to_nvs(const uint8_t *ports, uint8_t count) {
+    if (count > MAX_PV_PORTS) count = MAX_PV_PORTS;
+    Preferences prefs;
+    prefs.begin(NVS_NS, false);
+    prefs.putBytes(NVS_KEY_PORTS, ports, count);
+    prefs.end();
+    memcpy(s_pv_ports, ports, count);
+    s_pv_port_count = count;
 }
 
 // ---- MQTT topics -------------------------------------------------------------
@@ -221,6 +256,35 @@ static bool ble_connect_and_handshake(void) {
     return true;
 }
 
+// Publish a retained energy_today=0 (top-level + cached per-panel) when the local
+// calendar day has advanced past the day of the last energy publish. One check
+// covers both the midnight rollover (loop ticks ~30s even while the inverter
+// sleeps) and a stale value after reboot (s_energy_day is loaded from NVS at boot).
+static void maybe_reset_energy_today(void) {
+    if (!s_mqtt.connected() || s_base_topic[0] == '\0') return;
+
+    time_t now = time(nullptr);
+    if (now < 1700000000) return;            // clock not synced — can't trust the day
+    struct tm lt;
+    localtime_r(&now, &lt);
+    uint32_t today = local_day_key(&lt);
+
+    if (!energy_day_changed(s_energy_day, today)) return;
+
+    char topic[112];
+    snprintf(topic, sizeof(topic), "%senergy_today", s_base_topic);
+    s_mqtt.publish(topic, "0.000", true);
+    for (uint8_t i = 0; i < s_pv_port_count; i++) {
+        snprintf(topic, sizeof(topic), "%spv/%u/energy_today", s_base_topic,
+                 (unsigned)s_pv_ports[i]);
+        s_mqtt.publish(topic, "0.000", true);
+    }
+    Serial.printf("[main] Day rollover (%lu -> %lu): published energy_today=0 "
+                  "(%u panels).\n", (unsigned long)s_energy_day,
+                  (unsigned long)today, (unsigned)s_pv_port_count);
+    save_energy_day_to_nvs(today);
+}
+
 void setup(void) {
     Serial.begin(115200);
     Serial.println("[main] Starting Hoymiles ESP32 bridge.");
@@ -232,6 +296,7 @@ void setup(void) {
     esp_task_wdt_add(NULL);
 
     load_sn_from_nvs();
+    load_energy_state_from_nvs();
     s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
     // Authoritative MQTT buffer control (runtime); PubSubClient reallocates here.
     s_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
@@ -267,6 +332,10 @@ void loop(void) {
     //    Last-Will. Now status=offline genuinely means the ESP32 is down.
     if (!mqtt_connect()) { idle_wait(MQTT_RETRY_MS); return; }
 
+    // 3a. Zero energy_today at the local-day rollover / on a stale post-reboot
+    //     value, independently of whether the inverter is reachable.
+    maybe_reset_energy_today();
+
     // 4. (Re)establish BLE if needed. Failure here is usually just the inverter's
     //    radio being off (night / no PV) — keep MQTT alive and keep reporting.
     if (!ble_is_connected() || !s_enc_rand_ready) {
@@ -280,7 +349,10 @@ void loop(void) {
     }
 
     // 5. Poll the inverter and publish live data.
-    if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand, nullptr, nullptr)) {
+    uint8_t polled_ports[MAX_PV_PORTS];
+    uint8_t polled_port_count = 0;
+    if (!poller_poll(s_mqtt, s_base_topic, &s_tid, s_enc_rand,
+                     polled_ports, &polled_port_count)) {
         s_poll_failures++;
         s_ble_state = "poll_fail";
         // Drop the BLE link so the next loop re-handshakes (reloading encRand
@@ -297,6 +369,21 @@ void loop(void) {
     } else {
         s_poll_failures = 0;
         s_ble_state = "polling";
+        // Cache discovered ports (persist only on change) so per-panel topics can
+        // be zeroed overnight / after a reboot before the inverter is reachable.
+        if (polled_port_count > 0 &&
+            (polled_port_count != s_pv_port_count ||
+             memcmp(polled_ports, s_pv_ports, polled_port_count) != 0)) {
+            save_pv_ports_to_nvs(polled_ports, polled_port_count);
+        }
+        // Claim today so the rollover zero won't fire after a real reading.
+        time_t now = time(nullptr);
+        if (now >= 1700000000) {
+            struct tm lt;
+            localtime_r(&now, &lt);
+            uint32_t today = local_day_key(&lt);
+            if (today != 0 && today != s_energy_day) save_energy_day_to_nvs(today);
+        }
     }
 
     publish_diag();
