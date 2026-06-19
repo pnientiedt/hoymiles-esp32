@@ -155,7 +155,10 @@ static bool wifi_connect(void) {
         Serial.print(".");
     }
     Serial.printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
-    configTime(0, 0, "pool.ntp.org");
+    // configTzTime applies TZ + tzset + starts SNTP. Epoch remains UTC, so
+    // handshake.cpp's gmtime_r time-sync is unaffected; only localtime_r (used by
+    // the energy_today reset) now yields local time.
+    configTzTime(TIMEZONE, "pool.ntp.org");
     uint32_t ntp_start = millis();
     while (time(nullptr) < 1700000000UL && millis() - ntp_start < 8000) {
         esp_task_wdt_reset();

@@ -43,3 +43,11 @@
 #define MQTT_RETRY_MS       10000
 #define BLE_RETRY_MS        60000
 #define RESPONSE_TIMEOUT_MS 5000
+
+// POSIX TZ string defining the local day boundary for the energy_today reset.
+// The clock's epoch stays UTC; only local-time conversion uses this. Example
+// below is Central Europe with DST — set it to your own zone before flashing.
+#define TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3"
+
+// Max PV ports cached (NVS + RAM) for the nightly energy_today zero-reset.
+#define MAX_PV_PORTS 8
