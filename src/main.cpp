@@ -81,7 +81,12 @@ static void load_energy_state_from_nvs(void) {
     Preferences prefs;
     prefs.begin(NVS_NS, true);
     s_energy_day = prefs.getUInt(NVS_KEY_EDAY, 0);
-    size_t n = prefs.getBytes(NVS_KEY_PORTS, s_pv_ports, sizeof(s_pv_ports));
+    // Guard getBytes with isKey: before the first poll caches ports the key is
+    // absent, and getBytes would otherwise log a scary "[E] ... NOT_FOUND" every
+    // boot. Absent key simply means "no ports cached yet".
+    size_t n = prefs.isKey(NVS_KEY_PORTS)
+                   ? prefs.getBytes(NVS_KEY_PORTS, s_pv_ports, sizeof(s_pv_ports))
+                   : 0;
     prefs.end();
     s_pv_port_count = (n <= MAX_PV_PORTS) ? (uint8_t)n : 0;
 }
