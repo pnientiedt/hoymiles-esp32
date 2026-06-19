@@ -103,9 +103,10 @@ numbers without a live decode.
                    uint8_t *out_ports, uint8_t *out_port_count); // both nullable
   ```
   Existing callers may pass `nullptr`/`nullptr`.
-- **`main.cpp`** persists the list to NVS key **`pvports`** (1 count byte followed
-  by the port-number bytes) whenever it changes, and loads it at boot into a small
-  RAM cache. The reset uses this cached list to zero exactly the panels that exist.
+- **`main.cpp`** persists the list to NVS key **`pvports`** (a raw byte blob, one
+  byte per port; the count is the blob length returned by `getBytes`) whenever it
+  changes, and loads it at boot into a small RAM cache. The reset uses this cached
+  list to zero exactly the panels that exist.
 - **First-ever boot** with no `pvports` cached: only the top-level `energy_today` is
   zeroed; per-panel topics do not exist yet anyway. After the first successful poll
   seeds `pvports`, subsequent rollovers zero the panels too.
@@ -182,7 +183,7 @@ startup stale-check is just the first iteration of the normal loop.
 | Key        | Type            | Meaning                                            |
 |------------|-----------------|----------------------------------------------------|
 | `eday`     | `uint32`        | local-day key of last energy publish (`0`=unknown) |
-| `pvports`  | bytes           | count byte + discovered PV port numbers            |
+| `pvports`  | bytes           | discovered PV port numbers, one byte each (len=count) |
 
 Writes occur only when a value actually changes (~1/day for `eday`; rarely for
 `pvports`). NVS also elides writes when the stored value is identical, so flash

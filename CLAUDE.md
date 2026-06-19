@@ -26,7 +26,7 @@ one MQTT topic per metric over WiFi.
 python3 -m platformio test -e native
 
 # Run a single native test suite
-python3 -m platformio test -e native -f test_crypto   # or -f test_frame
+python3 -m platformio test -e native -f test_crypto   # or -f test_frame / -f test_energy_day
 
 # Build firmware
 python3 -m platformio run -e esp32
@@ -56,10 +56,11 @@ On a different machine or mbedTLS version, update those `-I`/`-L` paths.
 
 ## Testing strategy (important)
 
-Only `crypto` and `frame` are testable on the host — `[env:native]`'s
-`build_src_filter` deliberately compiles **only** `crypto.cpp` and `frame.cpp`,
-because every other module pulls in NimBLE / nanopb / Arduino headers that don't
-exist off-device. `ble_client`, `handshake`, and `poller` are verified by
+Only `crypto`, `frame`, and `energy_reset` are testable on the host —
+`[env:native]`'s `build_src_filter` deliberately compiles **only** `crypto.cpp`,
+`frame.cpp`, and `energy_reset.cpp`, because every other module pulls in NimBLE /
+nanopb / Arduino headers that don't exist off-device. `ble_client`, `handshake`,
+and `poller` are verified by
 flashing real hardware and watching the serial log (capture it with
 `tools/capture_serial.py`, see Commands) + MQTT topics. There is no
 host-side coverage of the BLE state machine, so changes there can only be

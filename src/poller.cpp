@@ -301,8 +301,12 @@ bool poller_poll(PubSubClient &mqtt, const char *base_topic,
     // Report discovered PV ports so the caller can zero per-panel energy_today
     // while the inverter is offline (nightly reset lives in main).
     if (out_ports && out_port_count) {
+        // Cap derived from the nanopb-generated pv_data array, not a literal, so
+        // it tracks the proto's max_count if the PV-array cap is ever raised. The
+        // caller's buffer (MAX_PV_PORTS) is sized >= this.
+        const pb_size_t max_ports = sizeof(combined.pv_data) / sizeof(combined.pv_data[0]);
         uint8_t n = 0;
-        for (pb_size_t i = 0; i < combined.pv_data_count && n < 4; i++) {
+        for (pb_size_t i = 0; i < combined.pv_data_count && n < max_ports; i++) {
             out_ports[n++] = (uint8_t)combined.pv_data[i].port_number;
         }
         *out_port_count = n;
