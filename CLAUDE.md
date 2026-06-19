@@ -31,9 +31,17 @@ python3 -m platformio test -e native -f test_crypto   # or -f test_frame
 # Build firmware
 python3 -m platformio run -e esp32
 
-# Flash + serial monitor (device connected over USB; 115200 baud)
+# Flash (device connected over USB; 115200 baud)
 python3 -m platformio run -e esp32 -t upload
-python3 -m platformio device monitor -b 115200
+
+# Capture the serial log. ALWAYS use this tool — never `pio device monitor`,
+# which needs an interactive TTY and fails headless (termios error). It pulses
+# reset for a clean boot banner, strips boot-ROM garbage, auto-detects the port,
+# and writes a timestamped logs/run_<stamp>.log (also teed to stdout). Needs
+# pyserial — run it with the ble-test venv python.
+ble-test/.venv/bin/python tools/capture_serial.py [duration_s] [port]
+ble-test/.venv/bin/python tools/capture_serial.py 90        # 90s, auto-port
+ble-test/.venv/bin/python tools/capture_serial.py 90 --no-reset  # don't reset
 
 # Regenerate nanopb C from proto/ (after editing a .proto / .options file).
 # nanopb_generator isn't on PATH — use the copy vendored by the Nanopb lib
@@ -52,9 +60,14 @@ Only `crypto` and `frame` are testable on the host — `[env:native]`'s
 `build_src_filter` deliberately compiles **only** `crypto.cpp` and `frame.cpp`,
 because every other module pulls in NimBLE / nanopb / Arduino headers that don't
 exist off-device. `ble_client`, `handshake`, and `poller` are verified by
-flashing real hardware and watching the serial log + MQTT topics. There is no
+flashing real hardware and watching the serial log (capture it with
+`tools/capture_serial.py`, see Commands) + MQTT topics. There is no
 host-side coverage of the BLE state machine, so changes there can only be
 proven on a real inverter.
+
+The `logs/` directory is **gitignored** and is where serial captures land. Treat
+its contents as private — the boot log prints the WiFi SSID and the LAN IP, so a
+captured log must never be pasted into a commit, the README, or any tracked file.
 
 Crypto test vectors in `test/test_crypto/` were generated from the
 `hoymiles-wifi` Python reference and are validated against real mbedTLS — trust
