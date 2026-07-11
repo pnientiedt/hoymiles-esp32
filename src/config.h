@@ -49,7 +49,7 @@
 // window, reboot. Bounds any silent state to ~restart-window seconds.
 #define NET_REASSOC_AFTER_MS    120000  // 2 min unhealthy -> reassociate
 #define NET_RESTART_AFTER_MS    300000  // 5 min unhealthy -> ESP.restart()
-#define NET_REASSOC_INTERVAL_MS  30000  // min spacing between reassociate attempts
+#define NET_REASSOC_INTERVAL_MS 30000  // min spacing between reassociate attempts
 
 // POSIX TZ string defining the local day boundary for the energy_today reset.
 // The clock's epoch stays UTC; only local-time conversion uses this. Example

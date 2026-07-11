@@ -360,6 +360,11 @@ static void idle_wait(uint32_t ms) {
     while ((millis() - start) < ms) {
         esp_task_wdt_reset();
         s_mqtt.loop();
+        // Refresh the watchdog health clock while connected: the long BLE-retry
+        // and poll-interval waits happen here, so without this a healthy-but-busy
+        // loop could drift toward the reassoc threshold. Keeps mqtt_disconnect_s
+        // near-zero in steady state (it still spikes once on reconnect).
+        if (s_mqtt.connected()) s_last_healthy_ms = millis();
         delay(WDT_FEED_SLICE_MS);
     }
 }
@@ -383,7 +388,7 @@ void loop(void) {
             Serial.println("[watchdog] MQTT unhealthy past restart window: ESP.restart().");
             Serial.flush();
             ESP.restart();
-            break;              // unreachable
+            break;  // unreachable
         case NET_ACTION_NONE:
         default:
             break;
