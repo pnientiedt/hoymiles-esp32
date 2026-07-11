@@ -10,6 +10,7 @@
 #include "handshake.h"
 #include "poller.h"
 #include "energy_reset.h"
+#include "net_watchdog.h"
 
 #define WDT_TIMEOUT_S 30
 // Must stay well under WDT_TIMEOUT_S so the watchdog is fed during idle waits.
@@ -51,6 +52,17 @@ static uint8_t  s_pv_port_count = 0;
 // Coarse BLE/poll state, surfaced over MQTT so a headless device can be diagnosed
 // remotely. "searching" is the normal nightly state (inverter radio off).
 static const char *s_ble_state = "boot";
+
+// Connection watchdog state. "Healthy" = MQTT connected. s_last_healthy_ms is
+// seeded at boot so bring-up gets a full grace window; if MQTT never comes up
+// within the restart window, the watchdog reboots a wedged bring-up.
+static uint32_t s_last_healthy_ms = 0;
+static uint32_t s_last_reassoc_ms = 0;
+static uint32_t s_wifi_reconnect_count = 0;   // forced reassociations this boot
+static uint32_t s_mqtt_reconnect_count = 0;   // successful MQTT (re)connects this boot
+static const net_watchdog_cfg_t s_net_cfg = {
+    NET_REASSOC_AFTER_MS, NET_RESTART_AFTER_MS, NET_REASSOC_INTERVAL_MS
+};
 
 // ---- NVS serial cache --------------------------------------------------------
 
@@ -176,6 +188,19 @@ static void publish_diag(void) {
 
     snprintf(topic, sizeof(topic), "%sdiag/ble_state", s_base_topic);
     s_mqtt.publish(topic, s_ble_state, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/wifi_reconnect_count", s_base_topic);
+    snprintf(val, sizeof(val), "%lu", (unsigned long)s_wifi_reconnect_count);
+    s_mqtt.publish(topic, val, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/mqtt_reconnect_count", s_base_topic);
+    snprintf(val, sizeof(val), "%lu", (unsigned long)s_mqtt_reconnect_count);
+    s_mqtt.publish(topic, val, true);
+
+    snprintf(topic, sizeof(topic), "%sdiag/mqtt_disconnect_s", s_base_topic);
+    snprintf(val, sizeof(val), "%lu",
+             (unsigned long)((millis() - s_last_healthy_ms) / 1000));
+    s_mqtt.publish(topic, val, true);
 }
 
 // ---- Connectivity ------------------------------------------------------------
@@ -220,6 +245,7 @@ static bool mqtt_connect(void) {
         return false;
     }
     Serial.println("[MQTT] Connected.");
+    s_mqtt_reconnect_count++;
     // status=online now means "the bridge is alive and on the broker" — NOT "the
     // inverter is producing". The Last-Will flips it to offline only when the
     // ESP32 itself drops, making offline a true device-down alarm. Whether the
@@ -302,7 +328,24 @@ void setup(void) {
 
     load_sn_from_nvs();
     load_energy_state_from_nvs();
+
+    // WiFi hardening for a weak link: start the STA interface, then kill modem
+    // power-save (a classic weak-link drop cause), max the TX power, and let the
+    // driver auto-reconnect between our watchdog checks. persistent(false) keeps
+    // WiFi-config NVS writes off the hot path.
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(false);
+
+    // Seed the watchdog's health clock so boot gets a full grace window.
+    s_last_healthy_ms = millis();
+
     s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    // Fail a dead-link connect() fast (4 s) instead of blocking ~15 s under the
+    // 30 s task-WDT.
+    s_mqtt.setSocketTimeout(4);
     // Authoritative MQTT buffer control (runtime); PubSubClient reallocates here.
     s_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
     ble_init();
@@ -317,12 +360,39 @@ static void idle_wait(uint32_t ms) {
     while ((millis() - start) < ms) {
         esp_task_wdt_reset();
         s_mqtt.loop();
+        // Refresh the watchdog health clock while connected: the long BLE-retry
+        // and poll-interval waits happen here, so without this a healthy-but-busy
+        // loop could drift toward the reassoc threshold. Keeps mqtt_disconnect_s
+        // near-zero in steady state (it still spikes once on reconnect).
+        if (s_mqtt.connected()) s_last_healthy_ms = millis();
         delay(WDT_FEED_SLICE_MS);
     }
 }
 
 void loop(void) {
     esp_task_wdt_reset();
+
+    // Connection watchdog. MQTT connected == the only trustworthy end-to-end
+    // health signal (WiFi.status() lies with zombie associations on a weak link).
+    // Update the health clock while healthy, then act on the decision.
+    if (s_mqtt.connected()) s_last_healthy_ms = millis();
+    switch (net_watchdog_decide(millis(), s_last_healthy_ms,
+                                s_last_reassoc_ms, &s_net_cfg)) {
+        case NET_ACTION_REASSOCIATE:
+            Serial.println("[watchdog] MQTT unhealthy: forcing WiFi reassociation.");
+            WiFi.disconnect(true, true);   // drop link + clear config; wifi_connect() re-begins
+            s_wifi_reconnect_count++;
+            s_last_reassoc_ms = millis();
+            break;
+        case NET_ACTION_RESTART:
+            Serial.println("[watchdog] MQTT unhealthy past restart window: ESP.restart().");
+            Serial.flush();
+            ESP.restart();
+            break;  // unreachable
+        case NET_ACTION_NONE:
+        default:
+            break;
+    }
 
     // 1. WiFi underpins both MQTT and (indirectly) remote visibility.
     if (!wifi_connect()) { s_ble_state = "wifi_down"; idle_wait(WIFI_RETRY_MS); return; }
