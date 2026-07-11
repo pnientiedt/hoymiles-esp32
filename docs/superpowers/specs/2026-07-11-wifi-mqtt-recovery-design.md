@@ -136,8 +136,13 @@ New retained `diag/` topics (published in `publish_diag()`):
 
 - `diag/wifi_reconnect_count` — forced-reassociation count this boot.
 - `diag/mqtt_reconnect_count` — successful MQTT (re)connects this boot.
-- `diag/mqtt_disconnect_s` — `(millis() - s_last_healthy_ms) / 1000`; 0 while
-  healthy. Lets ioBroker alert on a growing gap.
+- `diag/mqtt_disconnect_s` — `(millis() - s_last_healthy_ms) / 1000`. The health
+  clock is refreshed both at loop-top and inside `idle_wait()` whenever MQTT is
+  connected, so this reads near-zero in steady state and **spikes once, on the
+  first publish after a reconnect, to the full length of the outage that just
+  ended** (a live growing counter is impossible here — you cannot publish over
+  the very link that is down; `status=offline` via the Last-Will is the live
+  outage signal). Use the spike to see "how long was the last gap".
 
 ## Testing
 
