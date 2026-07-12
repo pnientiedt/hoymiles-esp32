@@ -142,6 +142,15 @@ poll-interval idle is sliced (`WDT_FEED_SLICE_MS`) rather than one big `delay()`
 and the WiFi-connect loop feeds it too. A single `delay(POLL_INTERVAL_MS)` would
 equal the timeout and panic-reset every cycle.
 
+### WiFi/BLE coexistence constraint
+
+WiFi modem power-save must stay at `WIFI_PS_MIN_MODEM`. Setting `WIFI_PS_NONE`
+(`WiFi.setSleep(false)`) boot-loops the firmware: the coexistence layer
+`abort()`s in `coex_core_enable()` when BLE initializes
+(`esp_bt_controller_enable()` ← `NimBLEDevice::init()` ← `ble_init()`), because
+this device runs WiFi and BLE at the same time. Tempting as it looks for a weak
+link, "disable modem sleep" is not available here.
+
 ### Generated code
 
 `src/proto/*.pb.{c,h}` are nanopb-generated and committed. Don't hand-edit them;

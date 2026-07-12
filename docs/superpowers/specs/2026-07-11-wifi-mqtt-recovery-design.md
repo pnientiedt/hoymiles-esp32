@@ -53,10 +53,17 @@ bug**, not a crash.
 
 Add, once, before the first connect:
 
-- `WiFi.setSleep(false)` — disable modem power-save.
 - `WiFi.setTxPower(WIFI_POWER_19_5dBm)` — max TX power.
 - `WiFi.setAutoReconnect(true)` — let the driver self-heal between our checks.
 - `WiFi.persistent(false)` — keep WiFi-config NVS writes off the hot path.
+
+**Modem power-save cannot be disabled here.** The original design called for
+`WiFi.setSleep(false)` (`WIFI_PS_NONE`). On hardware this boot-loops: the ESP32
+WiFi/BLE coexistence layer `abort()`s in `coex_core_enable()` (reached via
+`esp_bt_controller_enable()` ← `NimBLEDevice::init()` ← `ble_init()`) when WiFi
+power-save is `WIFI_PS_NONE`. Coexistence requires modem-sleep, and this bridge
+runs WiFi and BLE concurrently, so the firmware pins `WIFI_PS_MIN_MODEM`
+explicitly. Verified on-device 2026-07-12.
 
 Also `s_mqtt.setSocketTimeout(4)` (4 s) so a dead-link `connect()` fails fast
 instead of blocking ~15 s under the 30 s task-WDT.

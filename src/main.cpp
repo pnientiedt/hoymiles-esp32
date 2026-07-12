@@ -329,12 +329,16 @@ void setup(void) {
     load_sn_from_nvs();
     load_energy_state_from_nvs();
 
-    // WiFi hardening for a weak link: start the STA interface, then kill modem
-    // power-save (a classic weak-link drop cause), max the TX power, and let the
-    // driver auto-reconnect between our watchdog checks. persistent(false) keeps
-    // WiFi-config NVS writes off the hot path.
+    // WiFi hardening for a weak link: start the STA interface, max the TX power,
+    // and let the driver auto-reconnect between our watchdog checks.
+    // persistent(false) keeps WiFi-config NVS writes off the hot path.
+    //
+    // Modem power-save must stay at WIFI_PS_MIN_MODEM: this device runs WiFi and
+    // BLE concurrently, and the ESP32 coexistence layer abort()s inside
+    // coex_core_enable() (via esp_bt_controller_enable() -> NimBLEDevice::init())
+    // if WiFi power-save is WIFI_PS_NONE. WIFI_PS_NONE boot-loops the firmware.
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     WiFi.setAutoReconnect(true);
     WiFi.persistent(false);
